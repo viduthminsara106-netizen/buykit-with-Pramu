@@ -16,7 +16,9 @@ import {
   Mail,
   Building2,
   Sparkles,
+  ChevronDown,
 } from 'lucide-react';
+import { getTranslations } from '../utils/i18n';
 
 export interface CountryOption {
   code: string;
@@ -264,6 +266,8 @@ export const AccountSettingsModal: React.FC<AccountSettingsModalProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<SettingsTabKey>(initialTab);
   const [saving, setSaving] = useState(false);
+  const [isCountryDropdownOpen, setIsCountryDropdownOpen] = useState(false);
+  const [isLanguageDropdownOpen, setIsLanguageDropdownOpen] = useState(false);
 
   // New Card Form State
   const [cardNumberInput, setCardNumberInput] = useState('');
@@ -277,6 +281,8 @@ export const AccountSettingsModal: React.FC<AccountSettingsModalProps> = ({
   React.useEffect(() => {
     if (isOpen) {
       setActiveTab(initialTab);
+      setIsCountryDropdownOpen(false);
+      setIsLanguageDropdownOpen(false);
     }
   }, [isOpen, initialTab]);
 
@@ -286,6 +292,8 @@ export const AccountSettingsModal: React.FC<AccountSettingsModalProps> = ({
 
   const currentLanguage =
     LANGUAGES_LIST.find((l) => l.code === selectedLanguageCode) || LANGUAGES_LIST[0];
+
+  const t = getTranslations(selectedLanguageCode);
 
   const detectBrand = (num: string): 'Visa' | 'Mastercard' | 'Amex' => {
     const clean = num.replace(/\D/g, '');
@@ -382,7 +390,7 @@ export const AccountSettingsModal: React.FC<AccountSettingsModalProps> = ({
                 <div>
                   <div className="flex items-center gap-2">
                     <h2 className="font-display text-base font-extrabold tracking-tight sm:text-lg">
-                      Account Settings, Shipping & Payment Center
+                      {t.accountSettingsTitle}
                     </h2>
                     <img
                       src={currentCountry.flagUrl}
@@ -418,7 +426,7 @@ export const AccountSettingsModal: React.FC<AccountSettingsModalProps> = ({
                 }`}
               >
                 <UserIcon className="h-4 w-4" />
-                <span>Profile & Contacts</span>
+                <span>{t.tabProfileContacts}</span>
               </button>
 
               <button
@@ -431,7 +439,7 @@ export const AccountSettingsModal: React.FC<AccountSettingsModalProps> = ({
                 }`}
               >
                 <MapPin className="h-4 w-4" />
-                <span>Shipping Address</span>
+                <span>{t.tabDeliveryAddress}</span>
               </button>
 
               <button
@@ -444,7 +452,7 @@ export const AccountSettingsModal: React.FC<AccountSettingsModalProps> = ({
                 }`}
               >
                 <Globe className="h-4 w-4" />
-                <span>Country & Language</span>
+                <span>{t.tabCountryLanguage}</span>
               </button>
 
               <button
@@ -457,7 +465,9 @@ export const AccountSettingsModal: React.FC<AccountSettingsModalProps> = ({
                 }`}
               >
                 <CreditCard className="h-4 w-4" />
-                <span>Credit / Debit Cards ({savedCards.length})</span>
+                <span>
+                  {t.tabCreditDebitCards} ({savedCards.length})
+                </span>
               </button>
             </div>
 
@@ -679,122 +689,186 @@ export const AccountSettingsModal: React.FC<AccountSettingsModalProps> = ({
                 </form>
               )}
 
-              {/* TAB 3: COUNTRY (WITH FLAG IMAGE) & LANGUAGE SELECTOR */}
+              {/* TAB 3: COUNTRY (WITH FLAG IMAGE) & LANGUAGE SELECTOR (WITH DROPDOWN ARROW BARS) */}
               {activeTab === 'country_language' && (
                 <div className="space-y-6">
-                  {/* Country Selection Grid with Flag Images */}
-                  <div>
-                    <div className="mb-3 flex items-center justify-between">
-                      <div>
-                        <h3 className="font-display text-sm font-bold text-slate-950">
-                          Select Shipping Country / Region (With Flag)
-                        </h3>
-                        <p className="text-xs text-slate-500">
-                          Choose your delivery destination country and regional dialing code
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-2 rounded-xl border border-orange-200 bg-[#FFF3EB] px-3 py-1.5">
+                  {/* 1. Country Selection Dropdown Arrow Bar (With Flag Image) */}
+                  <div className="space-y-2.5">
+                    <div>
+                      <h3 className="font-display text-sm font-bold text-slate-950">
+                        {t.selectShippingCountry}
+                      </h3>
+                      <p className="text-xs text-slate-500">{t.selectCountrySubtitle}</p>
+                    </div>
+
+                    {/* Country Dropdown Trigger Button */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsCountryDropdownOpen((prev) => !prev);
+                        setIsLanguageDropdownOpen(false);
+                      }}
+                      className="flex w-full items-center justify-between gap-3 rounded-2xl border-2 border-orange-200 bg-white px-4 py-3.5 text-left shadow-2xs transition-all hover:border-[#F85606]"
+                    >
+                      <div className="flex min-w-0 items-center gap-3">
                         <img
                           src={currentCountry.flagUrl}
                           alt={currentCountry.name}
-                          className="h-4 w-6 rounded-xs border border-slate-300 object-cover"
+                          className="h-6 w-9 shrink-0 rounded-xs border border-slate-300 object-cover shadow-2xs"
                         />
-                        <span className="text-xs font-bold text-[#F85606]">
-                          {currentCountry.name} ({currentCountry.dialCode})
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 md:grid-cols-3">
-                      {COUNTRIES_WITH_FLAGS.map((c) => {
-                        const isSelected = c.code === selectedCountryCode;
-                        return (
-                          <button
-                            key={c.code}
-                            type="button"
-                            onClick={() => onUpdateCountryCode(c.code)}
-                            className={`flex items-center justify-between gap-2.5 rounded-xl border p-3 text-left transition-all ${
-                              isSelected
-                                ? 'border-[#F85606] bg-[#FFF5F0] ring-2 ring-[#F85606]/20'
-                                : 'border-slate-200 bg-white hover:border-orange-200 hover:bg-slate-50'
-                            }`}
-                          >
-                            <div className="flex min-w-0 items-center gap-2.5">
-                              <img
-                                src={c.flagUrl}
-                                alt={c.name}
-                                className="h-6 w-9 shrink-0 rounded-xs border border-slate-200 object-cover shadow-2xs"
-                              />
-                              <div className="min-w-0">
-                                <p className="truncate text-xs font-bold text-slate-900">
-                                  {c.name}
-                                </p>
-                                <p className="truncate font-mono text-[10px] text-slate-500">
-                                  {c.dialCode} · {c.shippingZone}
-                                </p>
-                              </div>
-                            </div>
-                            {isSelected && (
-                              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#F85606] text-white">
-                                <Check className="h-3 w-3" />
-                              </span>
-                            )}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  {/* Language Selection */}
-                  <div className="border-t border-slate-200 pt-5">
-                    <div className="mb-3 flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <Languages className="h-4 w-4 text-[#F85606]" />
-                        <div>
-                          <h3 className="font-display text-sm font-bold text-slate-950">
-                            Language Preference
-                          </h3>
-                          <p className="text-xs text-slate-500">
-                            Select your preferred display & notification language
+                        <div className="min-w-0">
+                          <p className="truncate font-display text-sm font-extrabold text-slate-950">
+                            {currentCountry.name}{' '}
+                            <span className="font-mono text-xs font-bold text-[#F85606]">
+                              ({currentCountry.dialCode})
+                            </span>
+                          </p>
+                          <p className="truncate text-xs text-slate-500">
+                            {currentCountry.shippingZone} · {currentCountry.currency}
                           </p>
                         </div>
                       </div>
-                      <span className="rounded-lg bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-800">
-                        Active: {currentLanguage.nativeLabel}
-                      </span>
+
+                      <div className="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-bold text-slate-700">
+                        <span>{isCountryDropdownOpen ? 'Hide' : 'Select Country'}</span>
+                        <ChevronDown
+                          className={`h-4 w-4 text-[#F85606] transition-transform duration-200 ${
+                            isCountryDropdownOpen ? 'rotate-180' : ''
+                          }`}
+                        />
+                      </div>
+                    </button>
+
+                    {/* Collapsible Country Dropdown List (Hidden until Arrow Bar is clicked) */}
+                    {isCountryDropdownOpen && (
+                      <div className="max-h-64 overflow-y-auto rounded-2xl border border-slate-200 bg-slate-50 p-2.5 shadow-inner">
+                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                          {COUNTRIES_WITH_FLAGS.map((c) => {
+                            const isSelected = c.code === selectedCountryCode;
+                            return (
+                              <button
+                                key={c.code}
+                                type="button"
+                                onClick={() => {
+                                  onUpdateCountryCode(c.code);
+                                  setIsCountryDropdownOpen(false);
+                                }}
+                                className={`flex items-center justify-between gap-2.5 rounded-xl border p-3 text-left transition-all ${
+                                  isSelected
+                                    ? 'border-[#F85606] bg-[#FFF5F0] ring-2 ring-[#F85606]/20'
+                                    : 'border-slate-200 bg-white hover:border-orange-200 hover:bg-orange-50/40'
+                                }`}
+                              >
+                                <div className="flex min-w-0 items-center gap-2.5">
+                                  <img
+                                    src={c.flagUrl}
+                                    alt={c.name}
+                                    className="h-5 w-8 shrink-0 rounded-xs border border-slate-200 object-cover shadow-2xs"
+                                  />
+                                  <div className="min-w-0">
+                                    <p className="truncate text-xs font-bold text-slate-900">
+                                      {c.name}
+                                    </p>
+                                    <p className="truncate font-mono text-[10px] text-slate-500">
+                                      {c.dialCode} · {c.shippingZone}
+                                    </p>
+                                  </div>
+                                </div>
+                                {isSelected && (
+                                  <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#F85606] text-white">
+                                    <Check className="h-3 w-3" />
+                                  </span>
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 2. Language Selection Dropdown Arrow Bar */}
+                  <div className="space-y-2.5 border-t border-slate-200 pt-5">
+                    <div className="flex items-center gap-2">
+                      <Languages className="h-4 w-4 text-[#F85606]" />
+                      <div>
+                        <h3 className="font-display text-sm font-bold text-slate-950">
+                          {t.languagePreference}
+                        </h3>
+                        <p className="text-xs text-slate-500">{t.selectLanguageSubtitle}</p>
+                      </div>
                     </div>
 
-                    <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
-                      {LANGUAGES_LIST.map((lang) => {
-                        const isSelected = lang.code === selectedLanguageCode;
-                        return (
-                          <button
-                            key={lang.code}
-                            type="button"
-                            onClick={() => onUpdateLanguageCode(lang.code)}
-                            className={`flex items-center justify-between rounded-xl border p-3 text-left transition-all ${
-                              isSelected
-                                ? 'border-[#F85606] bg-[#FFF5F0] ring-2 ring-[#F85606]/20'
-                                : 'border-slate-200 bg-white hover:border-orange-200'
-                            }`}
-                          >
-                            <div>
-                              <p className="text-xs font-extrabold text-slate-900">
-                                {lang.nativeLabel} · {lang.label}
-                              </p>
-                              <p className="mt-0.5 text-[11px] text-slate-500">
-                                {lang.regionNote}
-                              </p>
-                            </div>
-                            {isSelected && (
-                              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#F85606] text-white">
-                                <Check className="h-3 w-3" />
-                              </span>
-                            )}
-                          </button>
-                        );
-                      })}
-                    </div>
+                    {/* Language Dropdown Trigger Button */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsLanguageDropdownOpen((prev) => !prev);
+                        setIsCountryDropdownOpen(false);
+                      }}
+                      className="flex w-full items-center justify-between gap-3 rounded-2xl border-2 border-orange-200 bg-white px-4 py-3.5 text-left shadow-2xs transition-all hover:border-[#F85606]"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#FFF3EB] font-display text-xs font-extrabold text-[#F85606] uppercase">
+                          {currentLanguage.code}
+                        </div>
+                        <div>
+                          <p className="font-display text-sm font-extrabold text-slate-950">
+                            {currentLanguage.nativeLabel} · {currentLanguage.label}
+                          </p>
+                          <p className="text-xs text-slate-500">{currentLanguage.regionNote}</p>
+                        </div>
+                      </div>
+
+                      <div className="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-bold text-slate-700">
+                        <span>{isLanguageDropdownOpen ? 'Hide' : 'Select Language'}</span>
+                        <ChevronDown
+                          className={`h-4 w-4 text-[#F85606] transition-transform duration-200 ${
+                            isLanguageDropdownOpen ? 'rotate-180' : ''
+                          }`}
+                        />
+                      </div>
+                    </button>
+
+                    {/* Collapsible Language Dropdown List (Hidden until Arrow Bar is clicked) */}
+                    {isLanguageDropdownOpen && (
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-2.5 shadow-inner">
+                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                          {LANGUAGES_LIST.map((lang) => {
+                            const isSelected = lang.code === selectedLanguageCode;
+                            return (
+                              <button
+                                key={lang.code}
+                                type="button"
+                                onClick={() => {
+                                  onUpdateLanguageCode(lang.code);
+                                  setIsLanguageDropdownOpen(false);
+                                }}
+                                className={`flex items-center justify-between rounded-xl border p-3 text-left transition-all ${
+                                  isSelected
+                                    ? 'border-[#F85606] bg-[#FFF5F0] ring-2 ring-[#F85606]/20'
+                                    : 'border-slate-200 bg-white hover:border-orange-200 hover:bg-orange-50/40'
+                                }`}
+                              >
+                                <div>
+                                  <p className="text-xs font-extrabold text-slate-900">
+                                    {lang.nativeLabel} · {lang.label}
+                                  </p>
+                                  <p className="mt-0.5 text-[11px] text-slate-500">
+                                    {lang.regionNote}
+                                  </p>
+                                </div>
+                                {isSelected && (
+                                  <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#F85606] text-white">
+                                    <Check className="h-3 w-3" />
+                                  </span>
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   <div className="flex justify-end border-t border-slate-200 pt-4">
@@ -804,7 +878,7 @@ export const AccountSettingsModal: React.FC<AccountSettingsModalProps> = ({
                       className="inline-flex items-center gap-1.5 rounded-xl bg-[#F85606] px-5 py-2.5 text-xs font-extrabold text-white shadow-sm hover:bg-[#d94800]"
                     >
                       <Check className="h-4 w-4" />
-                      <span>Confirm Country & Language</span>
+                      <span>{t.confirmCountryLanguage}</span>
                     </button>
                   </div>
                 </div>

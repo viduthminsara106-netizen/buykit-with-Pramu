@@ -100,6 +100,7 @@ interface DarazAliAccountTabProps {
   selectedLanguageCode: string;
   savedCardsCount: number;
   onOpenSettingsModal: (tab?: SettingsTabKey) => void;
+  onOpenAdminStudio?: () => void;
   logoBadge: React.ReactNode;
 }
 
@@ -144,6 +145,7 @@ export const DarazAliAccountTab: React.FC<DarazAliAccountTabProps> = ({
   selectedLanguageCode,
   savedCardsCount,
   onOpenSettingsModal,
+  onOpenAdminStudio,
   logoBadge,
 }) => {
   const [orderFilter, setOrderFilter] = useState<OrderFilterTab>('all');
@@ -333,6 +335,18 @@ export const DarazAliAccountTab: React.FC<DarazAliAccountTabProps> = ({
                 <Settings className="h-4 w-4 text-[#F85606]" />
                 <span>Settings</span>
               </button>
+
+              {onOpenAdminStudio && (
+                <button
+                  type="button"
+                  onClick={onOpenAdminStudio}
+                  title="Admin Studio: Add Products (Google Enriched), Launch Creative Sales & Promotional Posters"
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-amber-300/80 bg-slate-950/90 px-3.5 py-2 text-xs font-extrabold text-amber-300 shadow-md transition-transform hover:scale-[1.03]"
+                >
+                  <Sparkles className="h-4 w-4 text-amber-300" />
+                  <span>Admin Studio (+Product / Sale / Poster)</span>
+                </button>
+              )}
 
               {currentUser ? (
                 <>

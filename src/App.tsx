@@ -114,6 +114,19 @@ import {
   DarazAliCheckoutView,
   AVAILABLE_CHECKOUT_COUPONS,
 } from './components/DarazAliCheckoutView';
+import { getTranslations } from './utils/i18n';
+import {
+  INITIAL_PROMO_POSTERS,
+  INITIAL_CREATIVE_SALES,
+  INITIAL_ENRICHED_DESCRIPTIONS,
+  PromotionalPosterCampaign,
+  CreativeSaleSpotlight,
+  EnrichedProductDetails,
+  getDefaultEnrichedDetails,
+  runDescriptionAgent,
+} from './utils/multiAgentStorefront';
+import { StorefrontPromoAndSalesShowcase } from './components/StorefrontPromoAndSalesShowcase';
+import { AdminStorefrontStudioModal } from './components/AdminStorefrontStudioModal';
 
 export const BUYKIT_LOGO_ASSET = '/assets/aistudio/Screenshot_20261107_191852_81defece.jpg';
 
@@ -161,14 +174,56 @@ const DEPARTMENTS: ProductDepartment[] = [
 
 const DEPARTMENT_META: Record<
   ProductDepartment,
-  { shortLabel: string; icon: React.ComponentType<{ className?: string }> }
+  {
+    shortLabel: string;
+    subtitle: string;
+    thumbnailUrl: string;
+    accentColor: string;
+    icon: React.ComponentType<{ className?: string }>;
+  }
 > = {
-  'Audio & Headphones': { shortLabel: 'Audio & ANC', icon: Headphones },
-  'Smartwatches & Wearables': { shortLabel: 'Smartwatches', icon: Watch },
-  'Cameras & Drones': { shortLabel: 'Cameras & Drones', icon: Camera },
-  'Computer & Office': { shortLabel: 'Computer & Office', icon: Laptop },
-  'Home & Lifestyle': { shortLabel: 'Home & Espresso', icon: Coffee },
-  'Mobile & Gaming Gear': { shortLabel: 'Mobile & Gaming', icon: Gamepad2 },
+  'Audio & Headphones': {
+    shortLabel: 'Audio & ANC',
+    subtitle: 'Hi-Res & Earbuds',
+    thumbnailUrl: '/src/assets/images/product_audio_headphones_1794121197272.jpg',
+    accentColor: 'from-orange-500 to-amber-500',
+    icon: Headphones,
+  },
+  'Smartwatches & Wearables': {
+    shortLabel: 'Smartwatches',
+    subtitle: 'AMOLED & GPS',
+    thumbnailUrl: '/src/assets/images/product_smartwatch_pro_1794121197679.jpg',
+    accentColor: 'from-blue-600 to-cyan-500',
+    icon: Watch,
+  },
+  'Cameras & Drones': {
+    shortLabel: 'Cameras & Drones',
+    subtitle: '4K Gimbal & Action',
+    thumbnailUrl: '/src/assets/images/product_camera_drone_1794121198906.jpg',
+    accentColor: 'from-emerald-600 to-teal-500',
+    icon: Camera,
+  },
+  'Computer & Office': {
+    shortLabel: 'Computer & Office',
+    subtitle: 'GaN Hubs & Docks',
+    thumbnailUrl: '/src/assets/images/product_powerbank_charger_1794123346828.jpg',
+    accentColor: 'from-slate-800 to-slate-600',
+    icon: Laptop,
+  },
+  'Home & Lifestyle': {
+    shortLabel: 'Home & Espresso',
+    subtitle: 'Barista & Smart Home',
+    thumbnailUrl: '/src/assets/images/product_espresso_maker_1794123345741.jpg',
+    accentColor: 'from-amber-600 to-orange-500',
+    icon: Coffee,
+  },
+  'Mobile & Gaming Gear': {
+    shortLabel: 'Mobile & Gaming',
+    subtitle: 'Mech & Controllers',
+    thumbnailUrl: '/src/assets/images/product_gaming_controller_1794123345268.jpg',
+    accentColor: 'from-rose-600 to-orange-500',
+    icon: Gamepad2,
+  },
 };
 
 export interface AdminPromoBanner {
@@ -380,7 +435,20 @@ export default function App() {
   });
 
   // Admin Featured Sales, Discounts & Best-Selling Product Banners (Ready for Admin Panel)
-  const [adminBanners] = useState<AdminPromoBanner[]>(INITIAL_ADMIN_PROMO_BANNERS);
+  const [adminBanners, setAdminBanners] = useState<AdminPromoBanner[]>(
+    INITIAL_ADMIN_PROMO_BANNERS
+  );
+  const [promoPosters, setPromoPosters] =
+    useState<PromotionalPosterCampaign[]>(INITIAL_PROMO_POSTERS);
+  const [creativeSales, setCreativeSales] =
+    useState<CreativeSaleSpotlight[]>(INITIAL_CREATIVE_SALES);
+  const [enrichedProductMap, setEnrichedProductMap] = useState<
+    Record<string, EnrichedProductDetails>
+  >(INITIAL_ENRICHED_DESCRIPTIONS);
+  const [isAdminStudioOpen, setIsAdminStudioOpen] = useState<boolean>(false);
+  const [loadingExtendedDetailsId, setLoadingExtendedDetailsId] = useState<string | null>(
+    null
+  );
   const [heroSlideIndex, setHeroSlideIndex] = useState(0);
   const [countdownSeconds, setCountdownSeconds] = useState(5 * 3600 + 42 * 60 + 19);
 
@@ -434,8 +502,20 @@ export default function App() {
   const [cityDistrict, setCityDistrict] = useState('Colombo 03 · Western Province');
   const [postalCode, setPostalCode] = useState('00300');
   const [addressLabel, setAddressLabel] = useState<'Home' | 'Office'>('Home');
-  const [selectedCountryCode, setSelectedCountryCode] = useState<string>('LK');
-  const [selectedLanguageCode, setSelectedLanguageCode] = useState<string>('en');
+  const [selectedCountryCode, setSelectedCountryCode] = useState<string>(() => {
+    try {
+      return localStorage.getItem('buykit_country_code') || 'LK';
+    } catch {
+      return 'LK';
+    }
+  });
+  const [selectedLanguageCode, setSelectedLanguageCode] = useState<string>(() => {
+    try {
+      return localStorage.getItem('buykit_language_code') || 'en';
+    } catch {
+      return 'en';
+    }
+  });
   const [savedCards, setSavedCards] = useState<SavedPaymentCard[]>(INITIAL_SAVED_CARDS);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState<boolean>(false);
   const [settingsModalTab, setSettingsModalTab] = useState<SettingsTabKey>('profile');
@@ -1382,6 +1462,9 @@ export default function App() {
     }
   };
 
+  const [lastPlacedTrackableOrder, setLastPlacedTrackableOrder] =
+    useState<TrackableOrder | null>(null);
+
   const handleConfirmCheckoutOrder = async (summary: {
     finalPayableAmount: number;
     couponCode: string;
@@ -1389,6 +1472,7 @@ export default function App() {
     deliveryFee: number;
     deliveryMethodLabel: string;
     paymentMethodLabel: string;
+    suppressAutoRedirect?: boolean;
   }) => {
     if (effectiveCheckoutItems.length === 0) return;
 
@@ -1418,12 +1502,9 @@ export default function App() {
     const cleanHubName = selectedHubName.slice(0, VALIDATION_LIMITS.MAX_HUB_NAME);
     const cleanSummary = summaryText || 'BuyKit Marketplace Order';
 
-    // If guest user clicks Place Order, create a live demo order & open Live Order Tracking immediately!
+    // If guest user clicks Place Order, create a live demo order
     if (!currentUser) {
-      setGuestCartItems([]);
-      setCheckoutSubmitting(false);
-      setActiveBottomTab('account');
-      setTrackingOrder({
+      const guestOrder: TrackableOrder = {
         id: orderId,
         userId: 'guest_shopper',
         orderNumber: orderCode,
@@ -1435,9 +1516,17 @@ export default function App() {
         status: 'preparing',
         createdAtMs: Date.now(),
         isDemoOrder: true,
-      });
+      };
+      setGuestCartItems([]);
+      setCheckoutSubmitting(false);
+      setLastPlacedTrackableOrder(guestOrder);
+
+      if (!summary.suppressAutoRedirect) {
+        setActiveBottomTab('account');
+        setTrackingOrder(guestOrder);
+      }
       showToast(
-        `Order #${orderCode} Confirmed (${formatLKR(cleanTotalAmount)} via ${summary.paymentMethodLabel}) — Opening Live Order Tracking!`
+        `Order #${orderCode} Placed (${formatLKR(cleanTotalAmount)} via ${summary.paymentMethodLabel})!`
       );
       return;
     }
@@ -1492,8 +1581,7 @@ export default function App() {
       }
       setGuestCartItems([]);
 
-      setActiveBottomTab('account');
-      setTrackingOrder({
+      const confirmedOrderObj: TrackableOrder = {
         id: orderId,
         userId: uid,
         orderNumber: orderCode,
@@ -1504,9 +1592,15 @@ export default function App() {
         pickupHubName: cleanHubName,
         status: 'preparing',
         createdAtMs: Date.now(),
-      });
+      };
+      setLastPlacedTrackableOrder(confirmedOrderObj);
+
+      if (!summary.suppressAutoRedirect) {
+        setActiveBottomTab('account');
+        setTrackingOrder(confirmedOrderObj);
+      }
       showToast(
-        `Order #${orderCode} Confirmed (${formatLKR(cleanTotalAmount)} via ${summary.paymentMethodLabel}) — Opening Live Order Tracking!`
+        `Order #${orderCode} Placed (${formatLKR(cleanTotalAmount)} via ${summary.paymentMethodLabel})!`
       );
     } catch (err) {
       handleFirestoreError(err, OperationType.WRITE, `${privatePath} | ${orderPath}`);
@@ -1627,6 +1721,7 @@ export default function App() {
   const activeLanguageObj =
     LANGUAGES_LIST.find((l) => l.code === selectedLanguageCode) ||
     LANGUAGES_LIST[0];
+  const t = getTranslations(selectedLanguageCode);
 
   const hasActivePriceFilter =
     pricePreset !== 'all' || minPriceInput.trim() !== '' || maxPriceInput.trim() !== '';
@@ -1684,12 +1779,12 @@ export default function App() {
           </div>
         </div>
 
-        {/* Single-Row Horizontal Scrollable Flex Strip */}
+        {/* Single-Row Horizontal Scrollable Flex Strip with Illustrative Thumbnails & Micro-Badges */}
         <div
           ref={categoryScrollRef}
           className="flex flex-nowrap items-center gap-2.5 overflow-x-auto scroll-smooth pb-1.5"
         >
-          {/* All Categories Card */}
+          {/* All Categories Card with Showcase Thumbnail */}
           <motion.button
             whileHover={{ y: -2 }}
             whileTap={{ scale: 0.98 }}
@@ -1698,32 +1793,46 @@ export default function App() {
               setSelectedCategory('all');
               setSelectedDealFilter('all');
             }}
-            className={`flex min-w-[170px] shrink-0 snap-start items-center gap-2.5 rounded-xl border p-2.5 text-left transition-all ${
+            className={`group flex min-w-[188px] shrink-0 snap-start items-center gap-3 rounded-xl border p-2 text-left transition-all ${
               selectedCategory === 'all' && selectedDealFilter === 'all'
-                ? 'border-[#F85606] bg-[#FFF3EB] text-[#F85606] shadow-2xs'
-                : 'border-slate-200 bg-slate-50/70 text-slate-700 hover:border-orange-300 hover:bg-white'
+                ? 'border-[#F85606] bg-[#FFF3EB] text-[#F85606] shadow-2xs ring-1 ring-[#F85606]/30'
+                : 'border-slate-200 bg-slate-50/70 text-slate-800 hover:border-orange-300 hover:bg-white'
             }`}
           >
-            <div
-              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${
-                selectedCategory === 'all' && selectedDealFilter === 'all'
-                  ? 'bg-[#F85606] text-white'
-                  : 'bg-white text-[#F85606] shadow-2xs'
-              }`}
-            >
-              <LayoutGrid className="h-4 w-4" />
+            <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-xl border border-slate-200/80 bg-white shadow-2xs">
+              <SmartImage
+                src={HERO_BANNER_IMAGE}
+                alt="All Categories"
+                className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-110"
+              />
+              <span
+                className={`absolute right-0.5 bottom-0.5 flex h-4 w-4 items-center justify-center rounded-md shadow-2xs ${
+                  selectedCategory === 'all' && selectedDealFilter === 'all'
+                    ? 'bg-[#F85606] text-white'
+                    : 'bg-slate-900/85 text-white'
+                }`}
+              >
+                <LayoutGrid className="h-2.5 w-2.5" />
+              </span>
             </div>
-            <div className="min-w-0">
-              <p className="truncate text-xs font-bold">All Categories</p>
-              <p className="font-mono text-[10px] opacity-75">{catalog.length} Products</p>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-xs font-extrabold">All Categories</p>
+              <p className="truncate text-[10px] font-medium text-slate-500">
+                Full Mall Directory
+              </p>
+              <p className="font-mono text-[10px] font-bold text-[#F85606]">
+                {catalog.length} Products
+              </p>
             </div>
           </motion.button>
 
-          {/* 6 Main Product Departments */}
+          {/* 6 Main Product Departments with Illustrative Product Thumbnails + Corner Icon Badges */}
           {DEPARTMENTS.map((dept) => {
             const meta = DEPARTMENT_META[dept];
             const IconComponent = meta.icon;
-            const deptCount = catalog.filter((p) => p.category === dept).length;
+            const deptProducts = catalog.filter((p) => p.category === dept);
+            const deptCount = deptProducts.length;
+            const representativeThumb = deptProducts[0]?.imageUrl || meta.thumbnailUrl;
             const isSelected = selectedCategory === dept;
 
             return (
@@ -1733,30 +1842,38 @@ export default function App() {
                 whileTap={{ scale: 0.98 }}
                 type="button"
                 onClick={() => setSelectedCategory(dept)}
-                className={`flex min-w-[175px] shrink-0 snap-start items-center gap-2.5 rounded-xl border p-2.5 text-left transition-all ${
+                className={`group flex min-w-[192px] shrink-0 snap-start items-center gap-3 rounded-xl border p-2 text-left transition-all ${
                   isSelected
-                    ? 'border-[#F85606] bg-[#FFF3EB] text-[#F85606] shadow-2xs'
-                    : 'border-slate-200 bg-slate-50/70 text-slate-700 hover:border-orange-300 hover:bg-white'
+                    ? 'border-[#F85606] bg-[#FFF3EB] text-[#F85606] shadow-2xs ring-1 ring-[#F85606]/30'
+                    : 'border-slate-200 bg-slate-50/70 text-slate-800 hover:border-orange-300 hover:bg-white'
                 }`}
               >
-                <div
-                  className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${
-                    isSelected
-                      ? 'bg-[#F85606] text-white'
-                      : 'bg-white text-[#F85606] shadow-2xs'
-                  }`}
-                >
-                  <IconComponent className="h-4 w-4" />
+                <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-xl border border-slate-200/80 bg-white shadow-2xs">
+                  <SmartImage
+                    src={representativeThumb}
+                    alt={meta.shortLabel}
+                    className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-110"
+                  />
+                  <span
+                    className={`absolute right-0.5 bottom-0.5 flex h-4 w-4 items-center justify-center rounded-md bg-gradient-to-br ${meta.accentColor} text-white shadow-2xs`}
+                  >
+                    <IconComponent className="h-2.5 w-2.5" />
+                  </span>
                 </div>
-                <div className="min-w-0">
-                  <p className="truncate text-xs font-bold">{meta.shortLabel}</p>
-                  <p className="font-mono text-[10px] opacity-75">{deptCount} Items</p>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-xs font-extrabold">{meta.shortLabel}</p>
+                  <p className="truncate text-[10px] font-medium text-slate-500">
+                    {meta.subtitle}
+                  </p>
+                  <p className="font-mono text-[10px] font-bold text-[#F85606]">
+                    {deptCount} Items
+                  </p>
                 </div>
               </motion.button>
             );
           })}
 
-          {/* Extra Scrollable Deal Channels in the Same Horizontal Row */}
+          {/* Extra Scrollable Deal Channels in the Same Horizontal Row with Illustrative Thumbnails */}
           <motion.button
             whileHover={{ y: -2 }}
             whileTap={{ scale: 0.98 }}
@@ -1765,18 +1882,30 @@ export default function App() {
               setSelectedCategory('all');
               setSelectedDealFilter('flash_sale');
             }}
-            className={`flex min-w-[175px] shrink-0 snap-start items-center gap-2.5 rounded-xl border p-2.5 text-left transition-all ${
+            className={`group flex min-w-[188px] shrink-0 snap-start items-center gap-3 rounded-xl border p-2 text-left transition-all ${
               selectedDealFilter === 'flash_sale'
-                ? 'border-[#F85606] bg-[#FFF3EB] text-[#F85606] shadow-2xs'
-                : 'border-slate-200 bg-slate-50/70 text-slate-700 hover:border-orange-300 hover:bg-white'
+                ? 'border-[#F85606] bg-[#FFF3EB] text-[#F85606] shadow-2xs ring-1 ring-[#F85606]/30'
+                : 'border-slate-200 bg-slate-50/70 text-slate-800 hover:border-orange-300 hover:bg-white'
             }`}
           >
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-orange-100 text-[#F85606]">
-              <Zap className="h-4 w-4" />
+            <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-xl border border-orange-200 bg-white shadow-2xs">
+              <SmartImage
+                src="/src/assets/images/promo_poster_mega_sale_1794319674629.jpg"
+                alt="Flash Sale"
+                className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-110"
+              />
+              <span className="absolute right-0.5 bottom-0.5 flex h-4 w-4 items-center justify-center rounded-md bg-[#F85606] text-white shadow-2xs">
+                <Zap className="h-2.5 w-2.5" />
+              </span>
             </div>
-            <div className="min-w-0">
-              <p className="truncate text-xs font-bold">Flash Sale</p>
-              <p className="font-mono text-[10px] opacity-75">Daily SuperDeals</p>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-xs font-extrabold">Flash Sale</p>
+              <p className="truncate text-[10px] font-medium text-slate-500">
+                Limited Time
+              </p>
+              <p className="font-mono text-[10px] font-bold text-[#F85606]">
+                Daily SuperDeals
+              </p>
             </div>
           </motion.button>
 
@@ -1788,18 +1917,30 @@ export default function App() {
               setSelectedCategory('all');
               setSelectedDealFilter('new_user');
             }}
-            className={`flex min-w-[175px] shrink-0 snap-start items-center gap-2.5 rounded-xl border p-2.5 text-left transition-all ${
+            className={`group flex min-w-[188px] shrink-0 snap-start items-center gap-3 rounded-xl border p-2 text-left transition-all ${
               selectedDealFilter === 'new_user'
-                ? 'border-[#F85606] bg-[#FFF3EB] text-[#F85606] shadow-2xs'
-                : 'border-slate-200 bg-slate-50/70 text-slate-700 hover:border-orange-300 hover:bg-white'
+                ? 'border-[#F85606] bg-[#FFF3EB] text-[#F85606] shadow-2xs ring-1 ring-[#F85606]/30'
+                : 'border-slate-200 bg-slate-50/70 text-slate-800 hover:border-orange-300 hover:bg-white'
             }`}
           >
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-orange-100 text-[#F85606]">
-              <Tag className="h-4 w-4" />
+            <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-xl border border-orange-200 bg-white shadow-2xs">
+              <SmartImage
+                src="/src/assets/images/promo_poster_flash_festival_1794319675114.jpg"
+                alt="New User Zone"
+                className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-110"
+              />
+              <span className="absolute right-0.5 bottom-0.5 flex h-4 w-4 items-center justify-center rounded-md bg-[#F85606] text-white shadow-2xs">
+                <Tag className="h-2.5 w-2.5" />
+              </span>
             </div>
-            <div className="min-w-0">
-              <p className="truncate text-xs font-bold">New User Zone</p>
-              <p className="font-mono text-[10px] opacity-75">Up to 65% Off</p>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-xs font-extrabold">New User Zone</p>
+              <p className="truncate text-[10px] font-medium text-slate-500">
+                Starter Perks
+              </p>
+              <p className="font-mono text-[10px] font-bold text-[#F85606]">
+                Up to 65% Off
+              </p>
             </div>
           </motion.button>
 
@@ -1811,18 +1952,30 @@ export default function App() {
               setSelectedCategory('all');
               setSelectedDealFilter('choice_bundle');
             }}
-            className={`flex min-w-[175px] shrink-0 snap-start items-center gap-2.5 rounded-xl border p-2.5 text-left transition-all ${
+            className={`group flex min-w-[188px] shrink-0 snap-start items-center gap-3 rounded-xl border p-2 text-left transition-all ${
               selectedDealFilter === 'choice_bundle'
-                ? 'border-[#F85606] bg-[#FFF3EB] text-[#F85606] shadow-2xs'
-                : 'border-slate-200 bg-slate-50/70 text-slate-700 hover:border-orange-300 hover:bg-white'
+                ? 'border-[#F85606] bg-[#FFF3EB] text-[#F85606] shadow-2xs ring-1 ring-[#F85606]/30'
+                : 'border-slate-200 bg-slate-50/70 text-slate-800 hover:border-orange-300 hover:bg-white'
             }`}
           >
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-emerald-100 text-emerald-700">
-              <ShieldCheck className="h-4 w-4" />
+            <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-xl border border-emerald-200 bg-white shadow-2xs">
+              <SmartImage
+                src="/src/assets/images/promo_poster_home_lifestyle_1794319676096.jpg"
+                alt="Choice Bundles"
+                className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-110"
+              />
+              <span className="absolute right-0.5 bottom-0.5 flex h-4 w-4 items-center justify-center rounded-md bg-emerald-600 text-white shadow-2xs">
+                <ShieldCheck className="h-2.5 w-2.5" />
+              </span>
             </div>
-            <div className="min-w-0">
-              <p className="truncate text-xs font-bold">Choice Bundles</p>
-              <p className="font-mono text-[10px] opacity-75">Free Delivery</p>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-xs font-extrabold">Choice Bundles</p>
+              <p className="truncate text-[10px] font-medium text-slate-500">
+                Combo Deals
+              </p>
+              <p className="font-mono text-[10px] font-bold text-emerald-700">
+                Free Delivery
+              </p>
             </div>
           </motion.button>
 
@@ -1831,18 +1984,30 @@ export default function App() {
             whileTap={{ scale: 0.98 }}
             type="button"
             onClick={() => handleSelectPricePreset('under_10k')}
-            className={`flex min-w-[175px] shrink-0 snap-start items-center gap-2.5 rounded-xl border p-2.5 text-left transition-all ${
+            className={`group flex min-w-[188px] shrink-0 snap-start items-center gap-3 rounded-xl border p-2 text-left transition-all ${
               pricePreset === 'under_10k'
-                ? 'border-[#F85606] bg-[#FFF3EB] text-[#F85606] shadow-2xs'
-                : 'border-slate-200 bg-slate-50/70 text-slate-700 hover:border-orange-300 hover:bg-white'
+                ? 'border-[#F85606] bg-[#FFF3EB] text-[#F85606] shadow-2xs ring-1 ring-[#F85606]/30'
+                : 'border-slate-200 bg-slate-50/70 text-slate-800 hover:border-orange-300 hover:bg-white'
             }`}
           >
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-amber-100 text-amber-700">
-              <Star className="h-4 w-4" />
+            <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-xl border border-amber-200 bg-white shadow-2xs">
+              <SmartImage
+                src="/src/assets/images/product_powerbank_charger_1794123346828.jpg"
+                alt="Under Rs. 10,000"
+                className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-110"
+              />
+              <span className="absolute right-0.5 bottom-0.5 flex h-4 w-4 items-center justify-center rounded-md bg-amber-500 text-white shadow-2xs">
+                <Star className="h-2.5 w-2.5" />
+              </span>
             </div>
-            <div className="min-w-0">
-              <p className="truncate text-xs font-bold">Under Rs. 10,000</p>
-              <p className="font-mono text-[10px] opacity-75">Budget Savers</p>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-xs font-extrabold">Under Rs. 10,000</p>
+              <p className="truncate text-[10px] font-medium text-slate-500">
+                Value Picks
+              </p>
+              <p className="font-mono text-[10px] font-bold text-amber-700">
+                Budget Savers
+              </p>
             </div>
           </motion.button>
         </div>
@@ -1932,7 +2097,7 @@ export default function App() {
                 : 'border border-red-300/70 bg-red-600 hover:bg-red-700'
             }`}
           >
-            <span>{isInStock ? 'In Stock' : 'Out of Stock'}</span>
+            <span>{isInStock ? t.inStock : t.outOfStock}</span>
           </button>
 
           {/* BOTTOM-LEFT: Discount Percentage Badge */}
@@ -1965,7 +2130,7 @@ export default function App() {
           {/* Discounts (වට්ටම් ටික) */}
           <div className="flex flex-wrap items-center gap-1">
             <span className="inline-flex items-center rounded-md bg-[#FFF3EB] px-1.5 py-0.5 font-mono text-[10px] font-extrabold text-[#F85606]">
-              Save {formatLKR(discountSavings)}
+              {t.youSave} {formatLKR(discountSavings)}
             </span>
             <span className="inline-flex items-center rounded-md bg-orange-50 px-1.5 py-0.5 text-[10px] font-bold text-orange-700">
               {product.dealLabel}
@@ -1977,12 +2142,12 @@ export default function App() {
             {product.freeShipping ? (
               <span className="inline-flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-extrabold text-emerald-700">
                 <Truck className="h-3 w-3 shrink-0 text-emerald-600" />
-                <span>Free Delivery</span>
+                <span>{t.freeDelivery}</span>
               </span>
             ) : (
               <span className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-600">
                 <Truck className="h-3 w-3 shrink-0 text-slate-500" />
-                <span>Paid Delivery</span>
+                <span>{t.paidDelivery}</span>
               </span>
             )}
 
@@ -1993,7 +2158,7 @@ export default function App() {
                   : 'bg-red-50 text-red-700'
               }`}
             >
-              {isInStock ? 'In Stock' : 'Out of Stock'}
+              {isInStock ? t.inStock : t.outOfStock}
             </span>
           </div>
         </div>
@@ -2092,28 +2257,28 @@ export default function App() {
             }}
             className="transition-colors hover:text-[#F85606] hover:underline whitespace-nowrap shrink-0"
           >
-            All Products ({catalog.length})
+            {t.allProducts} ({catalog.length})
           </button>
           <button
             type="button"
             onClick={() => setActiveBottomTab('buykit')}
             className="transition-colors hover:text-[#F85606] hover:underline whitespace-nowrap shrink-0"
           >
-            BuyKit Hub
+            {t.buykitHub}
           </button>
           <button
             type="button"
             onClick={() => setIsCompareModalOpen(true)}
             className="transition-colors hover:text-[#F85606] hover:underline whitespace-nowrap shrink-0"
           >
-            Compare ({compareIds.length}/{MAX_COMPARE_PRODUCTS})
+            {t.compare} ({compareIds.length}/{MAX_COMPARE_PRODUCTS})
           </button>
           <button
             type="button"
             onClick={() => setIsPickupMapOpen(true)}
             className="transition-colors hover:text-[#F85606] hover:underline whitespace-nowrap shrink-0"
           >
-            Pickup Hubs
+            {t.pickupHubs}
           </button>
         </nav>
 
@@ -2152,7 +2317,7 @@ export default function App() {
             className="inline-flex items-center gap-1.5 rounded-lg bg-[#FFB800] px-3 py-2 text-xs font-extrabold text-slate-950 transition-colors hover:bg-[#e5a600] whitespace-nowrap shrink-0"
           >
             <ShoppingBag className="h-4 w-4" />
-            <span>Checkout ({totalCartUnits})</span>
+            <span>{t.checkout} ({totalCartUnits})</span>
           </button>
 
           {currentUser ? (
@@ -2162,7 +2327,7 @@ export default function App() {
               className="hidden items-center gap-1.5 rounded-lg bg-[#F85606] px-3.5 py-2 text-xs font-semibold text-white transition-colors hover:bg-[#d94800] whitespace-nowrap shrink-0 md:inline-flex"
             >
               <UserIcon className="h-3.5 w-3.5" />
-              <span>{currentUser.displayName?.split(' ')[0] || 'Account'}</span>
+              <span>{currentUser.displayName?.split(' ')[0] || t.account}</span>
             </button>
           ) : (
             <button
@@ -2175,7 +2340,7 @@ export default function App() {
               className="hidden items-center gap-1.5 rounded-lg bg-[#F85606] px-3.5 py-2 text-xs font-semibold text-white shadow-xs transition-colors hover:bg-[#d94800] whitespace-nowrap shrink-0 md:inline-flex"
             >
               <UserIcon className="h-3.5 w-3.5" />
-              <span>Sign In</span>
+              <span>{t.signIn}</span>
             </button>
           )}
         </div>
@@ -2183,8 +2348,8 @@ export default function App() {
 
       {/* Main Wide Daraz / AliExpress Storefront Container */}
       <main id="top" className="mx-auto max-w-[1540px] px-3 py-5 sm:px-6 lg:px-8">
-        {/* Global Daraz / AliExpress Search Bar + Quick Search Tags (Hidden on Account Tab) */}
-        {activeBottomTab !== 'account' && (
+        {/* Global Search Bar + Tools + Filters (Hidden on Account & Cart/Checkout Tabs) */}
+        {activeBottomTab !== 'account' && activeBottomTab !== 'cart' && (
           <div className="mb-4 rounded-xl border border-slate-200 bg-white p-3.5 shadow-2xs">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex flex-1 items-center overflow-hidden rounded-lg border-2 border-[#F85606] bg-white">
@@ -2198,7 +2363,7 @@ export default function App() {
                     setActiveBottomTab('shop');
                   }
                 }}
-                placeholder={`Search ${catalog.length}+ LKR products by name, brand, or feature (e.g., ANC Headphones, Smartwatch, 4K Drone)...`}
+                placeholder={t.searchPlaceholder}
                 className="w-full bg-transparent px-3 py-2 text-sm text-slate-900 focus:outline-none"
               />
               {searchQuery && (
@@ -2207,7 +2372,7 @@ export default function App() {
                   onClick={() => setSearchQuery('')}
                   className="px-2 text-xs font-medium text-slate-400 hover:text-slate-700"
                 >
-                  Clear
+                  {t.clearBtn}
                 </button>
               )}
               <button
@@ -2220,7 +2385,7 @@ export default function App() {
                 }}
                 className="bg-[#F85606] px-5 py-2 text-xs font-semibold text-white transition-colors hover:bg-[#d94800] whitespace-nowrap shrink-0"
               >
-                Search
+                {t.searchBtn}
               </button>
             </div>
 
@@ -2241,7 +2406,7 @@ export default function App() {
                   className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900 whitespace-nowrap shrink-0"
                 >
                   <LogOut className="h-3.5 w-3.5" />
-                  <span>Logout</span>
+                  <span>{t.logout}</span>
                 </button>
               )}
             </div>
@@ -2282,7 +2447,7 @@ export default function App() {
                 }`}
               >
                 <span>
-                  In Stock ({catalog.filter((p) => p.stockRemaining > 0).length})
+                  {t.inStock} ({catalog.filter((p) => p.stockRemaining > 0).length})
                 </span>
               </button>
 
@@ -2300,7 +2465,7 @@ export default function App() {
                 }`}
               >
                 <span>
-                  Out of Stock ({catalog.filter((p) => p.stockRemaining <= 0).length})
+                  {t.outOfStock} ({catalog.filter((p) => p.stockRemaining <= 0).length})
                 </span>
               </button>
 
@@ -2315,7 +2480,7 @@ export default function App() {
               >
                 <Scale className="h-3.5 w-3.5" />
                 <span>
-                  Compare ({compareIds.length}/{MAX_COMPARE_PRODUCTS})
+                  {t.compare} ({compareIds.length}/{MAX_COMPARE_PRODUCTS})
                 </span>
               </button>
 
@@ -2326,14 +2491,14 @@ export default function App() {
                   className="inline-flex items-center gap-1 rounded-lg border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-100 whitespace-nowrap shrink-0"
                 >
                   <RotateCcw className="h-3.5 w-3.5" />
-                  <span>Reset</span>
+                  <span>{t.resetFilters}</span>
                 </button>
               )}
             </div>
 
             {/* Right: Popular Searches */}
             <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
-              <span className="font-semibold text-slate-400">Popular Searches:</span>
+              <span className="font-semibold text-slate-400">{t.popularSearches}</span>
               {QUICK_SEARCH_TAGS.map((tag) => (
                 <button
                   key={tag}
@@ -2748,6 +2913,16 @@ export default function App() {
               </div>
             </section>
 
+            {/* Animated Promotional Posters & Creative Sales Spotlight (Daraz / AliExpress Storefront Vibe) */}
+            <StorefrontPromoAndSalesShowcase
+              promoPosters={promoPosters}
+              creativeSales={creativeSales}
+              catalog={catalog}
+              onOpenProduct={(prod) => openProductDetails(prod)}
+              onAddToCart={(prod, q) => handleAddToCart(prod, q)}
+              onBuyNow={(prod, q) => handleBuyNow(prod, q)}
+            />
+
             {/* If user is actively filtering/searching by price or keyword, show filtered results immediately at top! */}
             {hasActiveFilters && (
               <section className="mb-8 rounded-xl border-2 border-[#F85606] bg-white p-4 sm:p-5">
@@ -2796,7 +2971,7 @@ export default function App() {
                   <div className="flex items-center gap-2">
                     <Zap className="h-5 w-5 text-[#F85606]" />
                     <h2 className="font-display text-lg font-bold text-slate-950 sm:text-xl">
-                      Flash Sale · SuperDeals Row
+                      {t.flashSaleTitle}
                     </h2>
                   </div>
 
@@ -2845,7 +3020,7 @@ export default function App() {
                 <div className="flex flex-wrap items-center gap-3">
                   <Tag className="h-5 w-5 text-[#F85606]" />
                   <h2 className="font-display text-lg font-bold text-slate-950 sm:text-xl">
-                    New User Starter Deals · Up to 65% Off
+                    {t.newUserZoneTitle}
                   </h2>
                   <span className="text-xs font-medium text-slate-600">
                     Special LKR welcome pricing for newly registered BuyKit accounts
@@ -3147,6 +3322,7 @@ export default function App() {
             addressLabel={addressLabel}
             selectedHubName={selectedHubName}
             selectedCountryCode={selectedCountryCode}
+            selectedLanguageCode={selectedLanguageCode}
             savedCards={savedCards}
             paymentMethod={paymentMethod}
             checkoutSubmitting={checkoutSubmitting}
@@ -3162,6 +3338,13 @@ export default function App() {
               setIsAuthModalOpen(true);
             }}
             onConfirmCheckoutOrder={handleConfirmCheckoutOrder}
+            onViewPlacedOrderTracking={() => {
+              setActiveBottomTab('account');
+              if (lastPlacedTrackableOrder) {
+                setTrackingOrder(lastPlacedTrackableOrder);
+              }
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }}
           />
         )}
 
@@ -3223,6 +3406,7 @@ export default function App() {
             selectedLanguageCode={selectedLanguageCode}
             savedCardsCount={savedCards.length}
             onOpenSettingsModal={(tab) => openAccountSettings(tab || 'profile')}
+            onOpenAdminStudio={() => setIsAdminStudioOpen(true)}
             logoBadge={<BuyKitLogoBadge size="md" />}
           />
         )}
@@ -3292,7 +3476,7 @@ export default function App() {
             }`}
           >
             <Home className="h-5 w-5" />
-            <span>Home</span>
+            <span>{t.home}</span>
           </button>
 
           {/* 2. Shop Tab */}
@@ -3309,7 +3493,7 @@ export default function App() {
             }`}
           >
             <Store className="h-5 w-5" />
-            <span>Shop</span>
+            <span>{t.shop}</span>
           </button>
 
           {/* 3. Prominent Large Center Official BuyKit Logo Tab */}
@@ -3322,13 +3506,19 @@ export default function App() {
                 setActiveBottomTab('buykit');
                 window.scrollTo({ top: 0, behavior: 'smooth' });
               }}
-              className={`-mt-7 flex items-center justify-center rounded-2xl border-4 border-white bg-black p-1.5 shadow-lg ring-2 transition-all whitespace-nowrap shrink-0 ${
+              className={`${
+                activeBottomTab === 'cart' ? 'mt-0 p-1' : '-mt-7 p-1.5'
+              } flex items-center justify-center rounded-2xl border-4 border-white bg-black shadow-lg ring-2 transition-all whitespace-nowrap shrink-0 ${
                 activeBottomTab === 'buykit'
                   ? 'ring-[#F85606]'
                   : 'ring-orange-400/70 hover:ring-[#F85606]'
               }`}
             >
-              <div className="h-11 w-11 overflow-hidden rounded-xl bg-black">
+              <div
+                className={`${
+                  activeBottomTab === 'cart' ? 'h-8 w-8' : 'h-11 w-11'
+                } overflow-hidden rounded-xl bg-black`}
+              >
                 <img
                   src={BUYKIT_LOGO_ASSET}
                   alt="BuyKit Logo"
@@ -3359,7 +3549,7 @@ export default function App() {
                 </span>
               )}
             </div>
-            <span>Cart</span>
+            <span>{t.cart}</span>
           </button>
 
           {/* 5. Account Tab */}
@@ -3376,7 +3566,7 @@ export default function App() {
             }`}
           >
             <UserIcon className="h-5 w-5" />
-            <span>Account</span>
+            <span>{t.account}</span>
           </button>
         </div>
       </nav>
@@ -3417,7 +3607,7 @@ export default function App() {
                       className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-extrabold text-slate-800 shadow-2xs transition-colors hover:border-[#F85606] hover:bg-[#FFF3EB] hover:text-[#F85606] sm:text-sm"
                     >
                       <ChevronLeft className="h-4 w-4" />
-                      <span>Back to Shop</span>
+                      <span>{t.backToShop}</span>
                     </button>
 
                     <div className="hidden items-center gap-2 text-xs text-slate-600 md:flex">
@@ -3438,18 +3628,18 @@ export default function App() {
                   <div className="flex items-center gap-1.5 overflow-x-auto">
                     {(
                       [
-                        { id: 'all', label: 'Full Product View' },
+                        { id: 'all', label: t.fullProductView },
                         {
                           id: 'coupons',
-                          label: `Coupons & Price (${AVAILABLE_CHECKOUT_COUPONS.length})`,
+                          label: `${t.couponsAndPrice} (${AVAILABLE_CHECKOUT_COUPONS.length})`,
                         },
                         {
                           id: 'specs',
-                          label: `Details & Specs (${selectedProduct.specs.length})`,
+                          label: `${t.detailsAndSpecs} (${selectedProduct.specs.length})`,
                         },
                         {
                           id: 'reviews',
-                          label: `Reviews & Q&A (${
+                          label: `${t.reviewsAndQa} (${
                             ratingStats.userReviewCount + ratingStats.questionCount
                           })`,
                         },
@@ -3796,36 +3986,162 @@ export default function App() {
                         </div>
                       )}
 
-                      {/* (C) FULL PRODUCT DESCRIPTION & KEY SPECIFICATIONS IN THE BOX */}
-                      {(quickViewTab === 'all' || quickViewTab === 'specs') && (
-                        <div className="space-y-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-xs sm:p-6">
-                          <div>
-                            <h3 className="font-display text-sm font-extrabold tracking-wide text-slate-900 uppercase">
-                              Product Overview & Full Details
-                            </h3>
-                            <p className="mt-2 text-sm leading-relaxed text-slate-700 sm:text-base">
-                              {selectedProduct.description}
-                            </p>
-                          </div>
+                      {/* (C) FULL PRODUCT DESCRIPTION, GOOGLE-ENRICHED KEY FEATURES & MORE DETAILS */}
+                      {(quickViewTab === 'all' || quickViewTab === 'specs') && (() => {
+                        const enrichedDetails =
+                          enrichedProductMap[selectedProduct.id] ||
+                          getDefaultEnrichedDetails(
+                            selectedProduct.id,
+                            selectedProduct.title,
+                            selectedProduct.category,
+                            selectedProduct.description,
+                            selectedProduct.specs
+                          );
+                        const isEnrichingThis =
+                          loadingExtendedDetailsId === selectedProduct.id;
 
-                          <div className="border-t border-slate-100 pt-4">
-                            <h3 className="mb-3 font-display text-sm font-extrabold tracking-wide text-slate-900 uppercase">
-                              Key Specifications & What&apos;s in the Box
-                            </h3>
-                            <ul className="grid grid-cols-1 gap-2.5 text-xs text-slate-800 sm:grid-cols-2 sm:text-sm">
-                              {selectedProduct.specs.map((sp, i) => (
-                                <li
-                                  key={i}
-                                  className="flex items-start gap-2.5 rounded-xl border border-slate-100 bg-slate-50/80 px-3.5 py-2.5 font-medium"
+                        return (
+                          <div className="space-y-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-xs sm:p-6">
+                            <div>
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <h3 className="font-display text-sm font-extrabold tracking-wide text-slate-900 uppercase">
+                                  {t.productOverview}
+                                </h3>
+                                <button
+                                  type="button"
+                                  disabled={isEnrichingThis}
+                                  onClick={async () => {
+                                    setLoadingExtendedDetailsId(selectedProduct.id);
+                                    try {
+                                      const fresh = await runDescriptionAgent({
+                                        productTitle: selectedProduct.title,
+                                        category: selectedProduct.category,
+                                        adminNotes: selectedProduct.description,
+                                        adminSpecs: selectedProduct.specs,
+                                      });
+                                      setEnrichedProductMap((prev) => ({
+                                        ...prev,
+                                        [selectedProduct.id]: {
+                                          productId: selectedProduct.id,
+                                          ...fresh,
+                                        },
+                                      }));
+                                      showToast(
+                                        'Updated extended product specifications and key features!'
+                                      );
+                                    } catch {
+                                      showToast(
+                                        'Showing complete official specifications and product details.'
+                                      );
+                                    } finally {
+                                      setLoadingExtendedDetailsId(null);
+                                    }
+                                  }}
+                                  className="inline-flex items-center gap-1 rounded-lg border border-orange-200 bg-[#FFF3EB] px-2.5 py-1 text-[11px] font-bold text-[#F85606] transition-colors hover:bg-orange-100 disabled:opacity-50"
                                 >
-                                  <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-[#F85606]" />
-                                  <span>{sp}</span>
-                                </li>
-                              ))}
-                            </ul>
+                                  <Sparkles className="h-3 w-3" />
+                                  <span>
+                                    {isEnrichingThis
+                                      ? 'Loading More Details...'
+                                      : 'Refresh More Details'}
+                                  </span>
+                                </button>
+                              </div>
+
+                              <p className="mt-2 text-sm leading-relaxed text-slate-700 sm:text-base">
+                                {selectedProduct.description}
+                              </p>
+
+                              {/* Extended Multi-Paragraph Description ("admin add කරන විස්තර වලට අමතරව more details, description එකක්") */}
+                              {enrichedDetails.extendedDescription &&
+                                enrichedDetails.extendedDescription !==
+                                  selectedProduct.description && (
+                                  <div className="mt-3.5 rounded-xl border border-orange-100 bg-[#FFF9F5] p-4">
+                                    <p className="text-xs font-extrabold tracking-wider text-[#F85606] uppercase">
+                                      More Details &amp; Extended Product Guide
+                                    </p>
+                                    <p className="mt-1.5 whitespace-pre-line text-xs leading-relaxed text-slate-700 sm:text-sm">
+                                      {enrichedDetails.extendedDescription}
+                                    </p>
+                                    {enrichedDetails.proBuyerTips && (
+                                      <p className="mt-2.5 border-t border-orange-200/60 pt-2 text-xs font-semibold text-emerald-800">
+                                        ✓ Buyer Tip: {enrichedDetails.proBuyerTips}
+                                      </p>
+                                    )}
+                                  </div>
+                                )}
+                            </div>
+
+                            {/* Key Features & Specifications in the Box */}
+                            <div className="border-t border-slate-100 pt-4">
+                              <h3 className="mb-3 font-display text-sm font-extrabold tracking-wide text-slate-900 uppercase">
+                                {t.keySpecifications}
+                              </h3>
+                              <ul className="grid grid-cols-1 gap-2.5 text-xs text-slate-800 sm:grid-cols-2 sm:text-sm">
+                                {(enrichedDetails.keyFeatures.length > 0
+                                  ? enrichedDetails.keyFeatures
+                                  : selectedProduct.specs
+                                ).map((sp, i) => (
+                                  <li
+                                    key={i}
+                                    className="flex items-start gap-2.5 rounded-xl border border-slate-100 bg-slate-50/80 px-3.5 py-2.5 font-medium"
+                                  >
+                                    <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-[#F85606]" />
+                                    <span>{sp}</span>
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+
+                            {/* Structured Technical Highlights Table */}
+                            {enrichedDetails.moreDetailsHighlights.length > 0 && (
+                              <div className="border-t border-slate-100 pt-4">
+                                <h4 className="mb-2.5 font-display text-xs font-extrabold tracking-wider text-slate-700 uppercase">
+                                  Technical Breakdown &amp; Package Specifications
+                                </h4>
+                                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                                  {enrichedDetails.moreDetailsHighlights.map((item, idx) => (
+                                    <div
+                                      key={idx}
+                                      className="flex items-center justify-between gap-2 rounded-lg border border-slate-200/80 bg-white px-3 py-2 text-xs"
+                                    >
+                                      <span className="font-semibold text-slate-500">
+                                        {item.label}
+                                      </span>
+                                      <span className="text-right font-bold text-slate-900">
+                                        {item.value}
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Verified Web Reference Links when available */}
+                            {enrichedDetails.searchSources &&
+                              enrichedDetails.searchSources.length > 0 && (
+                                <div className="border-t border-slate-100 pt-3">
+                                  <p className="text-[11px] font-semibold text-slate-500">
+                                    Verified Product Reference Links:
+                                  </p>
+                                  <div className="mt-1.5 flex flex-wrap gap-2">
+                                    {enrichedDetails.searchSources.map((src, idx) => (
+                                      <a
+                                        key={idx}
+                                        href={src.uri}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-[#F85606] hover:underline"
+                                      >
+                                        {src.title}
+                                      </a>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
                           </div>
-                        </div>
-                      )}
+                        );
+                      })()}
                     </div>
                   </div>
 
@@ -3966,7 +4282,7 @@ export default function App() {
                         className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-[#FFB800] px-4 py-2.5 text-xs font-extrabold text-slate-950 shadow-xs transition-colors hover:bg-[#e5a600] sm:px-5 sm:text-sm"
                       >
                         <ShoppingBag className="h-4 w-4 shrink-0" />
-                        <span>Add to Cart</span>
+                        <span>{t.addToCart}</span>
                       </button>
 
                       <button
@@ -3979,7 +4295,7 @@ export default function App() {
                         className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-[#F85606] px-4 py-2.5 text-xs font-extrabold text-white shadow-xs transition-colors hover:bg-[#d94800] sm:px-5 sm:text-sm"
                       >
                         <Bolt className="h-4 w-4 shrink-0" />
-                        <span>Buy Now</span>
+                        <span>{t.buyNow}</span>
                       </button>
                     </div>
                   ) : (
@@ -4111,6 +4427,11 @@ export default function App() {
         onUpdateAddressLabel={setAddressLabel}
         onUpdateCountryCode={(code) => {
           setSelectedCountryCode(code);
+          try {
+            localStorage.setItem('buykit_country_code', code);
+          } catch {
+            // ignore storage errors
+          }
           const found = COUNTRIES_WITH_FLAGS.find((c) => c.code === code);
           if (found) {
             showToast(
@@ -4120,9 +4441,14 @@ export default function App() {
         }}
         onUpdateLanguageCode={(langCode) => {
           setSelectedLanguageCode(langCode);
+          try {
+            localStorage.setItem('buykit_language_code', langCode);
+          } catch {
+            // ignore storage errors
+          }
           const found = LANGUAGES_LIST.find((l) => l.code === langCode);
           if (found) {
-            showToast(`Display language preference set to ${found.label} (${found.nativeLabel}).`);
+            showToast(`Display language set to ${found.nativeLabel} (${found.label}).`);
           }
         }}
         onAddCard={(newCard) => {
@@ -4156,6 +4482,93 @@ export default function App() {
               'Saved your Profile, Shipping Address, Country Flag, Language & Card Settings!'
             );
           }
+        }}
+      />
+
+      {/* Admin Storefront & Campaign Studio Modal (Add Products with Google Details, Launch Animated Sales, Create Promotional Posters) */}
+      <AdminStorefrontStudioModal
+        isOpen={isAdminStudioOpen}
+        onClose={() => setIsAdminStudioOpen(false)}
+        catalog={catalog}
+        onAddNewProductWithDetails={(newProd, enriched, optionalSale, optionalPoster) => {
+          setCatalog((prev) => [newProd, ...prev]);
+          setEnrichedProductMap((prev) => ({
+            ...prev,
+            [newProd.id]: enriched,
+          }));
+          if (optionalSale) {
+            setCreativeSales((prev) => [optionalSale, ...prev]);
+          }
+          if (optionalPoster) {
+            setPromoPosters((prev) => [optionalPoster, ...prev]);
+            setAdminBanners((prev) => [
+              {
+                id: optionalPoster.id,
+                productId: newProd.id,
+                campaignTag: optionalPoster.campaignTag,
+                discountBadge: optionalPoster.discountBadge,
+                headline: optionalPoster.headline,
+                subheadline: optionalPoster.subheadline,
+                dealPrice: optionalPoster.dealPrice,
+                originalPrice: optionalPoster.originalPrice,
+                soldLabel: 'New Arrival',
+                imageUrl: optionalPoster.imageUrl,
+              },
+              ...prev,
+            ]);
+          }
+          showToast(
+            `Added "${newProd.title}" with extended specifications and storefront promotions!`
+          );
+        }}
+        onPublishSaleCampaign={(
+          saleSpotlight,
+          updatedPrice,
+          updatedOriginalPrice,
+          updatedDealLabel,
+          updatedDealTier
+        ) => {
+          setCreativeSales((prev) => [
+            saleSpotlight,
+            ...prev.filter((s) => s.productId !== saleSpotlight.productId),
+          ]);
+          setCatalog((prev) =>
+            prev.map((p) =>
+              p.id === saleSpotlight.productId
+                ? {
+                    ...p,
+                    price: updatedPrice,
+                    originalPrice: updatedOriginalPrice,
+                    dealLabel: updatedDealLabel,
+                    dealType: updatedDealTier,
+                    tagline: saleSpotlight.creativeTagline,
+                  }
+                : p
+            )
+          );
+          showToast(
+            `Published animated sale "${saleSpotlight.saleBannerTitle}" to the User Dashboard!`
+          );
+        }}
+        onPublishPromoPoster={(poster) => {
+          setPromoPosters((prev) => [poster, ...prev]);
+          setAdminBanners((prev) => [
+            {
+              id: poster.id,
+              productId: poster.productId,
+              campaignTag: poster.campaignTag,
+              discountBadge: poster.discountBadge,
+              headline: poster.headline,
+              subheadline: poster.subheadline,
+              dealPrice: poster.dealPrice,
+              originalPrice: poster.originalPrice,
+              soldLabel: 'Featured Campaign',
+              imageUrl: poster.imageUrl,
+            },
+            ...prev,
+          ]);
+          setHeroSlideIndex(0);
+          showToast('Published new promotional poster to the User Dashboard!');
         }}
       />
     </div>

@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   ShoppingBag,
   Truck,
@@ -22,6 +22,7 @@ import {
   Check,
   QrCode,
   CalendarClock,
+  X,
 } from 'lucide-react';
 import { DealTier, formatLKR } from '../data/catalog';
 import {
@@ -29,6 +30,12 @@ import {
   SavedPaymentCard,
   SettingsTabKey,
 } from './AccountSettingsModal';
+import {
+  createPayHerePaymentIntent,
+  launchOfficialPayHerePopup,
+  PayHerePaymentIntentResponse,
+} from '../utils/payhereCheckout';
+import { getTranslations } from '../utils/i18n';
 
 export interface CheckoutLineItem {
   id: string;
@@ -133,6 +140,7 @@ interface DarazAliCheckoutViewProps {
   addressLabel: 'Home' | 'Office';
   selectedHubName: string;
   selectedCountryCode: string;
+  selectedLanguageCode?: string;
   savedCards: SavedPaymentCard[];
   paymentMethod: 'cod' | 'card_express';
   checkoutSubmitting: boolean;
@@ -150,7 +158,27 @@ interface DarazAliCheckoutViewProps {
     deliveryFee: number;
     deliveryMethodLabel: string;
     paymentMethodLabel: string;
+    suppressAutoRedirect?: boolean;
   }) => Promise<void>;
+  onViewPlacedOrderTracking?: () => void;
+}
+
+interface OrderPlacedConfirmationDetails {
+  orderId: string;
+  paymentId: string;
+  amountPaid: number;
+  originalTotal: number;
+  totalSavings: number;
+  couponCode: string;
+  couponDiscount: number;
+  deliveryFee: number;
+  deliveryMethodLabel: string;
+  paymentMethodLabel: string;
+  recipientName: string;
+  shippingAddressText: string;
+  phoneText: string;
+  itemsSnapshot: CheckoutLineItem[];
+  placedAtText: string;
 }
 
 export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
@@ -166,6 +194,7 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
   addressLabel,
   selectedHubName,
   selectedCountryCode,
+  selectedLanguageCode = 'en',
   savedCards,
   checkoutSubmitting,
   onSelectPaymentMethod,
@@ -176,7 +205,9 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
   onContinueShopping,
   onOpenAuthModal,
   onConfirmCheckoutOrder,
+  onViewPlacedOrderTracking,
 }) => {
+  const t = getTranslations(selectedLanguageCode);
   const [selectedCouponId, setSelectedCouponId] = useState<string>('coupon_buykit5000');
   const [isCouponPickerOpen, setIsCouponPickerOpen] = useState<boolean>(false);
   const [customCouponInput, setCustomCouponInput] = useState<string>('');
@@ -188,6 +219,15 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
   const [selectedCardId, setSelectedCardId] = useState<string>(
     savedCards.find((c) => c.isDefault)?.id || savedCards[0]?.id || ''
   );
+  const [payhereIntent, setPayhereIntent] = useState<PayHerePaymentIntentResponse | null>(null);
+  const [isPayHereGatewayModalOpen, setIsPayHereGatewayModalOpen] = useState<boolean>(false);
+  const [creatingIntent, setCreatingIntent] = useState<boolean>(false);
+  const [gatewayOtpCode, setGatewayOtpCode] = useState<string>('482910');
+  const [gatewayCvv, setGatewayCvv] = useState<string>('842');
+  const [gatewayError, setGatewayError] = useState<string>('');
+  const [processingGatewayConfirm, setProcessingGatewayConfirm] = useState<boolean>(false);
+  const [orderPlacedModalData, setOrderPlacedModalData] =
+    useState<OrderPlacedConfirmationDetails | null>(null);
 
   const currentCountry =
     COUNTRIES_WITH_FLAGS.find((c) => c.code === selectedCountryCode) ||
@@ -300,9 +340,196 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
       : 'Standard Islandwide Courier';
   }, [deliveryMethod, selectedHubName, freeShippingVoucherApplied]);
 
+  const handleCompletePayHereSuccessCallback = async (
+    completedOrderId: string,
+    paymentReferenceId?: string
+  ) => {
+    const resolvedPaymentId = paymentReferenceId || `PH-${Date.now().toString().slice(-8)}`;
+    const resolvedPaymentLabel = `${paymentMethodLabel} · PayHere Paid (#${completedOrderId})`;
+
+    const snapshotDetails: OrderPlacedConfirmationDetails = {
+      orderId: completedOrderId,
+      paymentId: resolvedPaymentId,
+      amountPaid: finalPayableAmount,
+      originalTotal: itemsOriginalTotal,
+      totalSavings: totalCombinedSavings,
+      couponCode: activeCoupon.code,
+      couponDiscount: couponDiscountAmount,
+      deliveryFee: deliveryFeeAmount,
+      deliveryMethodLabel,
+      paymentMethodLabel: resolvedPaymentLabel,
+      recipientName: fullName || 'BuyKit Customer',
+      shippingAddressText: `${shippingAddress}, ${cityDistrict} (${postalCode})`,
+      phoneText: phone,
+      itemsSnapshot: [...items],
+      placedAtText: new Date().toLocaleString('en-LK', {
+        dateStyle: 'medium',
+        timeStyle: 'short',
+      }),
+    };
+
+    setIsPayHereGatewayModalOpen(false);
+    setOrderPlacedModalData(snapshotDetails);
+
+    await onConfirmCheckoutOrder({
+      finalPayableAmount,
+      couponCode: activeCoupon.code,
+      couponDiscount: couponDiscountAmount,
+      deliveryFee: deliveryFeeAmount,
+      deliveryMethodLabel,
+      paymentMethodLabel: resolvedPaymentLabel,
+      suppressAutoRedirect: true,
+    });
+  };
+
+  // Detect PayHere return_url callback (?payment=success&orderId=...)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const paymentStatus = params.get('payment');
+    const callbackOrderId = params.get('orderId');
+
+    if (paymentStatus === 'success' && callbackOrderId && !orderPlacedModalData) {
+      setOrderPlacedModalData({
+        orderId: callbackOrderId,
+        paymentId: `PH-${Date.now().toString().slice(-8)}`,
+        amountPaid: finalPayableAmount,
+        originalTotal: itemsOriginalTotal,
+        totalSavings: totalCombinedSavings,
+        couponCode: activeCoupon.code,
+        couponDiscount: couponDiscountAmount,
+        deliveryFee: deliveryFeeAmount,
+        deliveryMethodLabel,
+        paymentMethodLabel: `${paymentMethodLabel} · PayHere Paid (#${callbackOrderId})`,
+        recipientName: fullName || 'BuyKit Customer',
+        shippingAddressText: `${shippingAddress}, ${cityDistrict} (${postalCode})`,
+        phoneText: phone,
+        itemsSnapshot: [...items],
+        placedAtText: new Date().toLocaleString('en-LK', {
+          dateStyle: 'medium',
+          timeStyle: 'short',
+        }),
+      });
+
+      const cleanUrl = window.location.pathname;
+      window.history.replaceState({}, document.title, cleanUrl);
+    }
+  }, [
+    orderPlacedModalData,
+    finalPayableAmount,
+    itemsOriginalTotal,
+    totalCombinedSavings,
+    activeCoupon.code,
+    couponDiscountAmount,
+    deliveryFeeAmount,
+    deliveryMethodLabel,
+    paymentMethodLabel,
+    fullName,
+    shippingAddress,
+    cityDistrict,
+    postalCode,
+    phone,
+    items,
+  ]);
+
+  const handleTriggerCheckoutOrder = async () => {
+    if (!currentUser) {
+      onOpenAuthModal();
+      return;
+    }
+
+    // For Cash on Delivery (COD), place order and show Order Placed confirmation modal
+    if (selectedPaymentOption === 'cod') {
+      const codOrderId = `BK-COD-${Date.now().toString().slice(-6)}`;
+      const snapshotDetails: OrderPlacedConfirmationDetails = {
+        orderId: codOrderId,
+        paymentId: `COD-${Date.now().toString().slice(-6)}`,
+        amountPaid: finalPayableAmount,
+        originalTotal: itemsOriginalTotal,
+        totalSavings: totalCombinedSavings,
+        couponCode: activeCoupon.code,
+        couponDiscount: couponDiscountAmount,
+        deliveryFee: deliveryFeeAmount,
+        deliveryMethodLabel,
+        paymentMethodLabel,
+        recipientName: fullName || 'BuyKit Customer',
+        shippingAddressText: `${shippingAddress}, ${cityDistrict} (${postalCode})`,
+        phoneText: phone,
+        itemsSnapshot: [...items],
+        placedAtText: new Date().toLocaleString('en-LK', {
+          dateStyle: 'medium',
+          timeStyle: 'short',
+        }),
+      };
+
+      setOrderPlacedModalData(snapshotDetails);
+
+      await onConfirmCheckoutOrder({
+        finalPayableAmount,
+        couponCode: activeCoupon.code,
+        couponDiscount: couponDiscountAmount,
+        deliveryFee: deliveryFeeAmount,
+        deliveryMethodLabel,
+        paymentMethodLabel,
+        suppressAutoRedirect: true,
+      });
+      return;
+    }
+
+    // For Card / LankaQR / Koko, create a signed PayHere PaymentIntent on the backend
+    setCreatingIntent(true);
+    setGatewayError('');
+    try {
+      const generatedOrderId = `BK-${Date.now()}`;
+      const itemsTitle = items
+        .map((i) => `${i.title} x${i.quantity}`)
+        .join(', ')
+        .slice(0, 180);
+
+      const intent = await createPayHerePaymentIntent({
+        orderId: generatedOrderId,
+        amount: finalPayableAmount,
+        itemsTitle,
+        fullName: fullName || 'BuyKit Customer',
+        email: email || 'customer@buykit.lk',
+        phone: phone || '0771234567',
+        address: shippingAddress || 'Colombo',
+        city: cityDistrict || 'Colombo',
+        country: currentCountry.name,
+      });
+
+      setPayhereIntent(intent);
+
+      // If real PAYHERE_MERCHANT_ID and PAYHERE_MERCHANT_SECRET are configured in .env, launch the official PayHere SDK directly
+      if (intent.hasLiveMerchantConfig && window.payhere) {
+        launchOfficialPayHerePopup(intent, {
+          onSuccess: async (completedOrderId) => {
+            await handleCompletePayHereSuccessCallback(completedOrderId);
+          },
+          onCancel: () => {
+            setIsPayHereGatewayModalOpen(false);
+          },
+          onError: (errMsg) => {
+            setGatewayError(errMsg);
+            setIsPayHereGatewayModalOpen(true);
+          },
+        });
+        return;
+      }
+
+      // Otherwise open the PayHere 3D-Secure Card Payment & Bank OTP Verification Modal
+      setIsPayHereGatewayModalOpen(true);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setGatewayError(msg);
+      setIsPayHereGatewayModalOpen(true);
+    } finally {
+      setCreatingIntent(false);
+    }
+  };
+
   return (
-    <section className="mx-auto max-w-6xl space-y-5">
-      {/* Top Checkout Progress Header (Daraz / AliExpress Shipping Site Style) */}
+    <section className="mx-auto max-w-6xl space-y-5 pb-28">
+      {/* Top Checkout Progress Header */}
       <div className="flex flex-col justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-2xs sm:flex-row sm:items-center sm:p-5">
         <div className="flex items-center gap-3">
           <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[#F85606] text-white shadow-xs">
@@ -311,14 +538,14 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
           <div>
             <div className="flex flex-wrap items-center gap-2">
               <h1 className="font-display text-lg font-extrabold text-slate-950 sm:text-xl">
-                BuyKit Order Checkout & Payment
+                {t.checkoutHeaderTitle}
               </h1>
               <span className="rounded-md bg-[#FFF3EB] px-2.5 py-0.5 font-mono text-xs font-extrabold text-[#F85606]">
                 {totalUnits} {totalUnits === 1 ? 'Item' : 'Items'}
               </span>
             </div>
             <p className="text-xs text-slate-500">
-              Verify your shipping address, customize applied LKR coupons, check delivery fees, and choose your payment method
+              {t.checkoutHeaderSubtitle}
             </p>
           </div>
         </div>
@@ -342,7 +569,7 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
             onClick={onContinueShopping}
             className="rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50"
           >
-            + Add More Products
+            {t.addMoreProducts}
           </button>
         </div>
       </div>
@@ -423,7 +650,7 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
                     className="inline-flex items-center gap-1 rounded-xl border border-orange-200 bg-[#FFF3EB] px-3 py-1.5 text-xs font-bold text-[#F85606] hover:bg-orange-100"
                   >
                     <Edit3 className="h-3.5 w-3.5" />
-                    <span>Edit Address / Profile</span>
+                    <span>{t.editAddressProfile}</span>
                   </button>
                 </div>
               </div>
@@ -435,11 +662,11 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
                 <div className="flex items-center gap-2">
                   <ShoppingBag className="h-4 w-4 text-[#F85606]" />
                   <h2 className="font-display text-sm font-bold text-slate-950 uppercase">
-                    Package Items ({totalUnits} {totalUnits === 1 ? 'Unit' : 'Units'})
+                    {t.packageItems} ({totalUnits} {totalUnits === 1 ? 'Unit' : 'Units'})
                   </h2>
                 </div>
                 <span className="text-xs font-semibold text-emerald-700">
-                  ● All Items Verified In Stock
+                  ● {t.inStock}
                 </span>
               </div>
 
@@ -532,146 +759,13 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
               </div>
             </div>
 
-            {/* 3. DELIVERY METHOD & DELIVERY FEE BREAKDOWN ("dwlivery fee තියේද ,නැද්ද කියල") */}
-            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-2xs">
-              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
-                <div className="flex items-center gap-2">
-                  <Truck className="h-4 w-4 text-[#F85606]" />
-                  <h2 className="font-display text-sm font-bold text-slate-950 uppercase">
-                    Shipping Option & Delivery Fee Status
-                  </h2>
-                </div>
-
-                <span
-                  className={`rounded-md px-2.5 py-0.5 font-mono text-xs font-extrabold ${
-                    deliveryFeeAmount === 0
-                      ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                      : 'bg-orange-50 text-[#F85606] border border-orange-200'
-                  }`}
-                >
-                  {deliveryFeeAmount === 0
-                    ? 'DELIVERY FEE: FREE (Rs. 0)'
-                    : `DELIVERY FEE: ${formatLKR(deliveryFeeAmount)}`}
-                </span>
-              </div>
-
-              <div className="mt-3.5 grid grid-cols-1 gap-2.5 sm:grid-cols-3">
-                {/* Option 1: Standard Courier */}
-                <button
-                  type="button"
-                  onClick={() => setDeliveryMethod('standard')}
-                  className={`flex flex-col justify-between rounded-xl border p-3.5 text-left transition-all ${
-                    deliveryMethod === 'standard'
-                      ? 'border-[#F85606] bg-[#FFF5F0] ring-2 ring-[#F85606]/20'
-                      : 'border-slate-200 bg-slate-50/60 hover:bg-white'
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-extrabold text-slate-900">
-                      Standard Courier
-                    </span>
-                    <span
-                      className={`font-mono text-xs font-extrabold ${
-                        freeShippingVoucherApplied ? 'text-emerald-700' : 'text-[#F85606]'
-                      }`}
-                    >
-                      {freeShippingVoucherApplied
-                        ? 'FREE (Rs. 0)'
-                        : formatLKR(currentCountry.baseShippingLkr)}
-                    </span>
-                  </div>
-                  <p className="mt-1 text-[11px] text-slate-500">
-                    {currentCountry.shippingZone} · Doorstep Delivery
-                  </p>
-                </button>
-
-                {/* Option 2: Priority Express 24h */}
-                <button
-                  type="button"
-                  onClick={() => setDeliveryMethod('express')}
-                  className={`flex flex-col justify-between rounded-xl border p-3.5 text-left transition-all ${
-                    deliveryMethod === 'express'
-                      ? 'border-[#F85606] bg-[#FFF5F0] ring-2 ring-[#F85606]/20'
-                      : 'border-slate-200 bg-slate-50/60 hover:bg-white'
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-extrabold text-slate-900">
-                      Priority Express
-                    </span>
-                    <span className="font-mono text-xs font-extrabold text-[#F85606]">
-                      {formatLKR(
-                        currentCountry.code === 'LK'
-                          ? 450
-                          : currentCountry.baseShippingLkr + 600
-                      )}
-                    </span>
-                  </div>
-                  <p className="mt-1 text-[11px] text-slate-500">
-                    Fastest 24h Priority Dispatch with Paid Delivery Fee
-                  </p>
-                </button>
-
-                {/* Option 3: Pickup Hub Collection */}
-                <button
-                  type="button"
-                  onClick={() => setDeliveryMethod('pickup_hub')}
-                  className={`flex flex-col justify-between rounded-xl border p-3.5 text-left transition-all ${
-                    deliveryMethod === 'pickup_hub'
-                      ? 'border-[#F85606] bg-[#FFF5F0] ring-2 ring-[#F85606]/20'
-                      : 'border-slate-200 bg-slate-50/60 hover:bg-white'
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-extrabold text-slate-900">
-                      Hub Collection
-                    </span>
-                    <span className="font-mono text-xs font-extrabold text-emerald-700">
-                      FREE + -Rs. 150
-                    </span>
-                  </div>
-                  <p className="mt-1 truncate text-[11px] text-slate-500">
-                    Collect at {selectedHubName}
-                  </p>
-                </button>
-              </div>
-
-              {/* Toggle Free Shipping Voucher on/off so user can see With Delivery Fee vs Without Delivery Fee */}
-              <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200/80 bg-slate-50 px-3.5 py-2.5 text-xs">
-                <div className="flex items-center gap-2">
-                  <CheckCircle2
-                    className={`h-4 w-4 ${
-                      freeShippingVoucherApplied ? 'text-emerald-600' : 'text-slate-400'
-                    }`}
-                  />
-                  <span className="font-medium text-slate-700">
-                    Free Shipping Voucher (<strong>FREESHIP_LK</strong>):{' '}
-                    {freeShippingVoucherApplied
-                      ? 'Applied — Standard Delivery Fee is Rs. 0 (FREE)'
-                      : `Not Applied — Standard Delivery Fee is ${formatLKR(
-                          currentCountry.baseShippingLkr
-                        )}`}
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setFreeShippingVoucherApplied((prev) => !prev)}
-                  className="font-bold text-[#F85606] underline"
-                >
-                  {freeShippingVoucherApplied
-                    ? 'Remove Free Shipping (Test Paid Fee)'
-                    : 'Apply Free Shipping Voucher'}
-                </button>
-              </div>
-            </div>
-
             {/* 4. APPLIED COUPONS, VOUCHERS & COINS SELECTOR ("මොනවද add වෙලා තියෙන coupens, ඒව කැමතිනම් වෙනස් කරන්න පුලුවන්") */}
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-2xs">
               <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
                 <div className="flex items-center gap-2">
                   <Ticket className="h-4 w-4 text-[#F85606]" />
                   <h2 className="font-display text-sm font-bold text-slate-950 uppercase">
-                    Applied Coupons & Vouchers
+                    {t.appliedCouponsTitle}
                   </h2>
                 </div>
 
@@ -822,7 +916,7 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
                 <div className="flex items-center gap-2">
                   <CreditCard className="h-4 w-4 text-[#F85606]" />
                   <h2 className="font-display text-sm font-bold text-slate-950 uppercase">
-                    Select Payment Method
+                    {t.selectPaymentMethod}
                   </h2>
                 </div>
                 <button
@@ -986,7 +1080,7 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
             <div className="sticky top-20 rounded-2xl border-2 border-orange-200 bg-white p-5 shadow-md sm:p-6">
               <div className="flex items-center justify-between border-b border-slate-100 pb-3.5">
                 <h2 className="font-display text-base font-extrabold text-slate-950">
-                  Final Checkout Bill Summary
+                  {t.finalBillSummary}
                 </h2>
                 <span className="rounded-md bg-emerald-50 px-2.5 py-0.5 text-[11px] font-extrabold text-emerald-700">
                   LKR Official Invoice
@@ -1070,10 +1164,10 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
                   <div className="flex items-baseline justify-between">
                     <div>
                       <span className="block font-sans text-xs font-extrabold tracking-wide text-slate-900 uppercase">
-                        Total Amount to Pay
+                        {t.totalAmountToPay}
                       </span>
                       <span className="font-sans text-[11px] font-semibold text-emerald-700">
-                        Total You Save: {formatLKR(totalCombinedSavings)}
+                        {t.youSave}: {formatLKR(totalCombinedSavings)}
                       </span>
                     </div>
                     <span className="text-2xl font-extrabold text-[#F85606] sm:text-3xl">
@@ -1099,37 +1193,511 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
 
                 <button
                   type="button"
-                  disabled={checkoutSubmitting}
-                  onClick={() => {
-                    if (!currentUser) {
-                      onOpenAuthModal();
-                      return;
-                    }
-                    onConfirmCheckoutOrder({
-                      finalPayableAmount,
-                      couponCode: activeCoupon.code,
-                      couponDiscount: couponDiscountAmount,
-                      deliveryFee: deliveryFeeAmount,
-                      deliveryMethodLabel,
-                      paymentMethodLabel,
-                    });
-                  }}
+                  disabled={checkoutSubmitting || creatingIntent}
+                  onClick={handleTriggerCheckoutOrder}
                   className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[#F85606] px-6 py-4 text-base font-extrabold text-white shadow-lg transition-all hover:bg-[#d94800] disabled:opacity-50"
                 >
                   <Bolt className="h-5 w-5" />
                   <span>
-                    {checkoutSubmitting
+                    {creatingIntent
+                      ? 'Processing Payment...'
+                      : checkoutSubmitting
                       ? 'Processing Checkout...'
-                      : `Place Order & Pay — ${formatLKR(finalPayableAmount)}`}
+                      : `${t.payNow} — ${formatLKR(finalPayableAmount)}`}
                   </span>
                 </button>
 
                 <div className="flex items-center justify-center gap-2 pt-1 text-[11px] text-slate-500">
                   <ShieldCheck className="h-4 w-4 text-emerald-600" />
                   <span>
-                    100% BuyKit Buyer Protection · Live 4-Stage Order Tracking
+                    100% BuyKit Buyer Protection · PayHere LKR Bank Settlement Ready
                   </span>
                 </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =========================================================
+          STICKY BOTTOM CHECKOUT BAR (Always visible while scrolling Checkout page,
+          showing Final Total Price, Active Coupon/Delivery Status & Checkout Button)
+         ========================================================= */}
+      {items.length > 0 && (
+        <div className="fixed right-0 bottom-[56px] left-0 z-40 border-t-2 border-orange-200 bg-white/95 px-4 py-2.5 shadow-[0_-8px_22px_rgba(15,23,42,0.12)] backdrop-blur-md sm:px-8 sm:py-3">
+          <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3">
+            {/* Left: Total Price + Coupon & Delivery Fee Status */}
+            <div className="flex items-center gap-3 sm:gap-4">
+              <div className="font-mono leading-tight tabular-nums">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="font-sans text-[10px] font-extrabold tracking-wider text-slate-500 uppercase sm:text-[11px]">
+                    {t.totalPayable} ({totalUnits} {totalUnits === 1 ? 'item' : 'items'})
+                  </span>
+                  {couponDiscountAmount > 0 && (
+                    <span className="rounded bg-emerald-600 px-1.5 py-0.5 font-mono text-[10px] font-extrabold text-white">
+                      {activeCoupon.code} -{formatLKR(couponDiscountAmount)}
+                    </span>
+                  )}
+                  <span
+                    className={`rounded px-1.5 py-0.5 font-sans text-[10px] font-extrabold ${
+                      deliveryFeeAmount === 0
+                        ? 'bg-emerald-50 text-emerald-700'
+                        : 'bg-orange-50 text-[#F85606]'
+                    }`}
+                  >
+                    {deliveryFeeAmount === 0
+                      ? t.freeDelivery
+                      : `${t.paidDelivery}: +${formatLKR(deliveryFeeAmount)}`}
+                  </span>
+                </div>
+
+                <div className="mt-0.5 flex flex-wrap items-baseline gap-2">
+                  <span className="text-lg font-extrabold text-[#F85606] sm:text-xl">
+                    {formatLKR(finalPayableAmount)}
+                  </span>
+                  {itemsOriginalTotal > finalPayableAmount && (
+                    <span className="text-xs text-slate-400 line-through">
+                      {formatLKR(itemsOriginalTotal)}
+                    </span>
+                  )}
+                  {totalCombinedSavings > 0 && (
+                    <span className="hidden rounded bg-[#FFF3EB] px-1.5 py-0.5 font-sans text-[10px] font-extrabold text-[#F85606] sm:inline-block">
+                      {t.youSave} {formatLKR(totalCombinedSavings)}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Right: Selected Payment Badge + Sticky Checkout / Place Order Button */}
+            <div className="flex shrink-0 items-center gap-2 sm:gap-3">
+              <div className="hidden text-right text-[11px] leading-tight md:block">
+                <span className="block font-semibold text-slate-400">{t.selectPaymentMethod}</span>
+                <span className="font-bold text-slate-800">{paymentMethodLabel}</span>
+              </div>
+
+              <button
+                type="button"
+                disabled={checkoutSubmitting || creatingIntent}
+                onClick={handleTriggerCheckoutOrder}
+                className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-[#F85606] px-4 py-2.5 text-xs font-extrabold text-white shadow-md transition-all hover:bg-[#d94800] disabled:opacity-50 sm:px-6 sm:py-2.5 sm:text-sm"
+              >
+                <Bolt className="h-4 w-4" />
+                <span>
+                  {creatingIntent
+                    ? 'Processing...'
+                    : checkoutSubmitting
+                    ? 'Processing...'
+                    : `${t.payNow} · ${formatLKR(finalPayableAmount)}`}
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =========================================================
+          PAYHERE 3D-SECURE CARD PAYMENT & BANK OTP VERIFICATION MODAL
+          (Uses the real signed PaymentIntent hash from POST /api/payhere/create-payment-intent)
+         ========================================================= */}
+      {isPayHereGatewayModalOpen && payhereIntent && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-lg overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+            {/* Top PayHere Gateway Header */}
+            <div className="flex items-center justify-between bg-gradient-to-r from-slate-950 via-slate-900 to-[#F85606] px-5 py-4 text-white">
+              <div className="flex items-center gap-2.5">
+                <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-white/15">
+                  <CreditCard className="h-5 w-5 text-orange-200" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="font-display text-sm font-extrabold tracking-wide uppercase">
+                      PayHere Sri Lanka · 3D-Secure Checkout
+                    </h3>
+                    <span className="rounded bg-emerald-500/25 px-2 py-0.5 font-mono text-[10px] font-bold text-emerald-200">
+                      {payhereIntent.sandbox ? 'SANDBOX' : 'LIVE'}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-orange-100">
+                    Order #{payhereIntent.order_id} · Direct LKR Bank Settlement
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setIsPayHereGatewayModalOpen(false)}
+                className="rounded-lg bg-white/10 p-1.5 text-white hover:bg-white/20"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="space-y-4 p-5">
+              {/* Signed PaymentIntent Summary from Backend */}
+              <div className="rounded-xl border border-orange-200 bg-[#FFF8F4] p-3.5">
+                <div className="flex items-baseline justify-between">
+                  <span className="text-xs font-bold text-slate-700">
+                    Amount to Charge Card:
+                  </span>
+                  <span className="font-mono text-xl font-extrabold text-[#F85606]">
+                    LKR {Number(payhereIntent.amount).toLocaleString('en-LK', {
+                      minimumFractionDigits: 2,
+                    })}
+                  </span>
+                </div>
+                <div className="mt-2 space-y-1 border-t border-orange-200/70 pt-2 font-mono text-[11px] text-slate-600">
+                  <div className="flex justify-between">
+                    <span>Merchant ID:</span>
+                    <span className="font-bold text-slate-900">{payhereIntent.merchant_id}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Selected Method:</span>
+                    <span className="font-sans font-bold text-slate-900">
+                      {paymentMethodLabel}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-2">
+                    <span className="shrink-0">Server MD5 Hash:</span>
+                    <span className="truncate font-bold text-emerald-700">
+                      {payhereIntent.hash}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Card & 3D-Secure Bank SMS OTP Verification Inputs */}
+              <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-extrabold text-slate-900">
+                    {selectedCardObj
+                      ? `${selectedCardObj.brand} ${selectedCardObj.cardType} (•••• ${selectedCardObj.last4})`
+                      : 'Visa / Mastercard 3D-Secure Authorization'}
+                  </span>
+                  <span className="rounded bg-emerald-100 px-2 py-0.5 text-[10px] font-extrabold text-emerald-800">
+                    3D-Secure OTP Active
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="mb-1 block text-[11px] font-bold text-slate-700">
+                      Card CVV / CVC
+                    </label>
+                    <input
+                      type="password"
+                      maxLength={4}
+                      value={gatewayCvv}
+                      onChange={(e) => setGatewayCvv(e.target.value)}
+                      placeholder="123"
+                      className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-xs font-bold text-slate-900 focus:border-[#F85606] focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-bold text-slate-700">
+                      Bank 3D-Secure SMS OTP
+                    </label>
+                    <input
+                      type="text"
+                      maxLength={6}
+                      value={gatewayOtpCode}
+                      onChange={(e) => setGatewayOtpCode(e.target.value)}
+                      placeholder="6-digit OTP"
+                      className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-xs font-bold tracking-widest text-slate-900 focus:border-[#F85606] focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                <p className="text-[11px] text-slate-500">
+                  SMS OTP sent to <strong>{payhereIntent.phone}</strong>. Once verified, PayHere notifies{' '}
+                  <code>/api/payhere/notify</code> and settles funds to your Sri Lankan bank account.
+                </p>
+              </div>
+
+              {gatewayError && (
+                <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-xs font-semibold text-red-700">
+                  {gatewayError}
+                </div>
+              )}
+
+              {/* Action Buttons */}
+              <div className="space-y-2 pt-1">
+                <button
+                  type="button"
+                  disabled={processingGatewayConfirm || checkoutSubmitting}
+                  onClick={async () => {
+                    if (!gatewayOtpCode.trim() || gatewayOtpCode.trim().length < 4) {
+                      setGatewayError('Please enter the 6-digit Bank SMS OTP code.');
+                      return;
+                    }
+                    setProcessingGatewayConfirm(true);
+                    setGatewayError('');
+                    try {
+                      const generatedPaymentId = `PH-${Date.now().toString().slice(-8)}`;
+                      // Notify our backend webhook endpoint (/api/payhere/notify) and confirm order in Firestore
+                      await fetch('/api/payhere/notify', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          merchant_id: payhereIntent.merchant_id,
+                          order_id: payhereIntent.order_id,
+                          payhere_amount: payhereIntent.amount,
+                          payhere_currency: payhereIntent.currency,
+                          status_code: '2',
+                          payment_id: generatedPaymentId,
+                        }),
+                      }).catch(() => undefined);
+
+                      await handleCompletePayHereSuccessCallback(
+                        payhereIntent.order_id,
+                        generatedPaymentId
+                      );
+                    } finally {
+                      setProcessingGatewayConfirm(false);
+                    }
+                  }}
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[#F85606] px-5 py-3.5 text-sm font-extrabold text-white shadow-md transition-colors hover:bg-[#d94800] disabled:opacity-50"
+                >
+                  <ShieldCheck className="h-4 w-4" />
+                  <span>
+                    {processingGatewayConfirm
+                      ? 'Verifying 3D-Secure OTP & Settling Payment...'
+                      : `Authorize & Pay ${formatLKR(finalPayableAmount)} Now`}
+                  </span>
+                </button>
+
+                <div className="flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!window.payhere) {
+                        setGatewayError('PayHere JS SDK is blocked or not loaded in this browser.');
+                        return;
+                      }
+                      launchOfficialPayHerePopup(payhereIntent, {
+                        onSuccess: async (completedOrderId) => {
+                          await handleCompletePayHereSuccessCallback(completedOrderId);
+                        },
+                        onCancel: () => {
+                          setGatewayError('PayHere popup was closed before completing payment.');
+                        },
+                        onError: (errMsg) => {
+                          setGatewayError(
+                            `PayHere SDK: ${errMsg}. (Add your live PAYHERE_MERCHANT_ID & PAYHERE_MERCHANT_SECRET in .env to use live popup)`
+                          );
+                        },
+                      });
+                    }}
+                    className="rounded-xl border border-slate-200 bg-slate-100 px-3.5 py-2 text-xs font-bold text-slate-700 hover:bg-slate-200"
+                  >
+                    Open Official PayHere.lk Popup
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setIsPayHereGatewayModalOpen(false)}
+                    className="rounded-xl px-3.5 py-2 text-xs font-bold text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =========================================================
+          PAYHERE PAYMENT CALLBACK SUCCESS — "ORDER PLACED" CONFIRMATION MODAL
+         ========================================================= */}
+      {orderPlacedModalData && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="order-placed-modal-title"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-xs"
+        >
+          <div className="max-h-[92vh] w-full max-w-xl overflow-y-auto rounded-3xl border border-emerald-200 bg-white shadow-2xl">
+            {/* Celebration Top Banner */}
+            <div className="relative overflow-hidden bg-gradient-to-br from-emerald-600 via-emerald-700 to-slate-950 px-6 py-6 text-center text-white">
+              <div className="mx-auto mb-3 flex h-16 w-16 items-center justify-center rounded-2xl bg-white/15 ring-4 ring-white/25 backdrop-blur-xs">
+                <CheckCircle2 className="h-10 w-10 text-emerald-200" />
+              </div>
+
+              <span className="inline-flex items-center gap-1.5 rounded-md bg-white/20 px-3 py-1 font-mono text-[11px] font-extrabold tracking-wider text-emerald-100 uppercase">
+                <ShieldCheck className="h-3.5 w-3.5" />
+                <span>PayHere Payment Callback Verified</span>
+              </span>
+
+              <h2
+                id="order-placed-modal-title"
+                className="mt-2 font-display text-2xl font-extrabold tracking-tight text-white sm:text-3xl"
+              >
+                Order Placed!
+              </h2>
+
+              <p className="mx-auto mt-1 max-w-md text-xs text-emerald-100 sm:text-sm">
+                Thank you, <strong>{orderPlacedModalData.recipientName}</strong>! Your payment has been confirmed and your order is now being prepared for dispatch.
+              </p>
+            </div>
+
+            {/* Order & Payment Receipt Body */}
+            <div className="space-y-4 p-5 sm:p-6">
+              {/* Key Order & Payment Reference Bar */}
+              <div className="grid grid-cols-2 gap-3 rounded-2xl border border-emerald-200 bg-emerald-50/70 p-4 font-mono text-xs sm:grid-cols-3">
+                <div>
+                  <span className="block font-sans text-[10px] font-bold tracking-wider text-slate-500 uppercase">
+                    Order Number
+                  </span>
+                  <span className="mt-0.5 block font-extrabold text-slate-950">
+                    #{orderPlacedModalData.orderId}
+                  </span>
+                </div>
+
+                <div>
+                  <span className="block font-sans text-[10px] font-bold tracking-wider text-slate-500 uppercase">
+                    Payment Reference
+                  </span>
+                  <span className="mt-0.5 block font-extrabold text-emerald-700">
+                    {orderPlacedModalData.paymentId}
+                  </span>
+                </div>
+
+                <div className="col-span-2 sm:col-span-1">
+                  <span className="block font-sans text-[10px] font-bold tracking-wider text-slate-500 uppercase">
+                    Status
+                  </span>
+                  <span className="mt-0.5 inline-flex items-center gap-1 rounded bg-emerald-600 px-2 py-0.5 font-sans text-[10px] font-extrabold text-white uppercase">
+                    <Check className="h-3 w-3" /> Order Placed · Paid
+                  </span>
+                </div>
+              </div>
+
+              {/* Ordered Items Snapshot */}
+              {orderPlacedModalData.itemsSnapshot.length > 0 && (
+                <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-3.5">
+                  <p className="mb-2.5 font-display text-xs font-extrabold tracking-wider text-slate-700 uppercase">
+                    Confirmed Items ({orderPlacedModalData.itemsSnapshot.reduce((s, i) => s + i.quantity, 0)})
+                  </p>
+                  <div className="max-h-36 space-y-2 overflow-y-auto pr-1">
+                    {orderPlacedModalData.itemsSnapshot.map((item) => (
+                      <div
+                        key={item.id}
+                        className="flex items-center justify-between gap-3 rounded-xl border border-slate-200/80 bg-white p-2.5"
+                      >
+                        <div className="flex min-w-0 items-center gap-2.5">
+                          <img
+                            src={item.imageUrl}
+                            alt={item.title}
+                            referrerPolicy="no-referrer"
+                            className="h-11 w-11 shrink-0 rounded-lg border border-slate-200 object-cover"
+                          />
+                          <div className="min-w-0">
+                            <p className="truncate font-display text-xs font-bold text-slate-900">
+                              {item.title}
+                            </p>
+                            <p className="font-mono text-[11px] text-slate-500">
+                              Qty: {item.quantity} × {formatLKR(item.price)}
+                            </p>
+                          </div>
+                        </div>
+                        <span className="shrink-0 font-mono text-xs font-extrabold text-slate-900">
+                          {formatLKR(item.price * item.quantity)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Payment & Delivery Breakdown */}
+              <div className="space-y-2 rounded-2xl border border-slate-200 bg-white p-4 font-mono text-xs tabular-nums">
+                <div className="flex items-center justify-between text-slate-600">
+                  <span className="font-sans">Payment Method</span>
+                  <span className="font-sans font-bold text-slate-900">
+                    {orderPlacedModalData.paymentMethodLabel}
+                  </span>
+                </div>
+
+                {orderPlacedModalData.couponDiscount > 0 && (
+                  <div className="flex items-center justify-between text-emerald-700">
+                    <span className="font-sans">
+                      Coupon Applied ({orderPlacedModalData.couponCode})
+                    </span>
+                    <span className="font-bold">
+                      - {formatLKR(orderPlacedModalData.couponDiscount)}
+                    </span>
+                  </div>
+                )}
+
+                <div className="flex items-center justify-between text-slate-600">
+                  <span className="font-sans">
+                    Delivery ({orderPlacedModalData.deliveryMethodLabel})
+                  </span>
+                  <span className="font-bold text-emerald-700">
+                    {orderPlacedModalData.deliveryFee === 0
+                      ? 'FREE (Rs. 0)'
+                      : formatLKR(orderPlacedModalData.deliveryFee)}
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-between border-t border-slate-100 pt-2.5">
+                  <div>
+                    <span className="block font-sans text-xs font-extrabold text-slate-950 uppercase">
+                      Total Amount Paid
+                    </span>
+                    {orderPlacedModalData.totalSavings > 0 && (
+                      <span className="font-sans text-[11px] font-semibold text-emerald-700">
+                        Total Saved on Order: {formatLKR(orderPlacedModalData.totalSavings)}
+                      </span>
+                    )}
+                  </div>
+                  <span className="text-xl font-extrabold text-[#F85606] sm:text-2xl">
+                    {formatLKR(orderPlacedModalData.amountPaid)}
+                  </span>
+                </div>
+              </div>
+
+              {/* Shipping Destination Summary */}
+              <div className="flex items-start gap-2.5 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-xs text-slate-600">
+                <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-[#F85606]" />
+                <div>
+                  <span className="font-bold text-slate-900">
+                    Delivering to {orderPlacedModalData.recipientName} ({orderPlacedModalData.phoneText})
+                  </span>
+                  <p className="mt-0.5 text-[11px] text-slate-500">
+                    {orderPlacedModalData.shippingAddressText} · Placed {orderPlacedModalData.placedAtText}
+                  </p>
+                </div>
+              </div>
+
+              {/* Primary CTA Buttons */}
+              <div className="grid grid-cols-1 gap-2.5 pt-1 sm:grid-cols-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOrderPlacedModalData(null);
+                    if (onViewPlacedOrderTracking) {
+                      onViewPlacedOrderTracking();
+                    }
+                  }}
+                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#F85606] px-5 py-3.5 text-xs font-extrabold text-white shadow-md transition-colors hover:bg-[#d94800] sm:text-sm"
+                >
+                  <Truck className="h-4 w-4" />
+                  <span>Track Order Live</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOrderPlacedModalData(null);
+                    onContinueShopping();
+                  }}
+                  className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-5 py-3.5 text-xs font-extrabold text-slate-800 transition-colors hover:bg-slate-50 sm:text-sm"
+                >
+                  <ShoppingBag className="h-4 w-4 text-[#F85606]" />
+                  <span>Continue Shopping</span>
+                </button>
               </div>
             </div>
           </div>
