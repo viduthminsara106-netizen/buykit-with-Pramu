@@ -1,0 +1,479 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net: Default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Hardened Global Helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isOwner(userId) {
+      return isVerifiedUser() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isVerifiedUser() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        request.auth.token.email == 'viduthminsara106@gmail.com'
+      );
+    }
+
+    function userParentExists(userId) {
+      return exists(/databases/$(database)/documents/users/$(userId));
+    }
+
+    function reviewParentExists(reviewId) {
+      return exists(/databases/$(database)/documents/product_reviews/$(reviewId));
+    }
+
+    function questionParentExists(questionId) {
+      return exists(/databases/$(database)/documents/product_questions/$(questionId));
+    }
+
+    // Blueprint Validation Helpers
+    function isValidUserPublicProfile(data) {
+      return data.keys().hasAll(['userId', 'displayName', 'photoUrl', 'newUserDealClaimed', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['userId', 'displayName', 'photoUrl', 'newUserDealClaimed', 'createdAt', 'updatedAt']) &&
+        data.userId is string && isValidId(data.userId) && data.userId == request.auth.uid &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80 &&
+        data.photoUrl is string && data.photoUrl.size() <= 500 &&
+        data.newUserDealClaimed is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidUserPrivateInfo(data) {
+      return data.keys().hasAll(['userId', 'email', 'phone', 'shippingAddress', 'postalCode', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['userId', 'email', 'phone', 'shippingAddress', 'postalCode', 'createdAt', 'updatedAt']) &&
+        data.userId is string && isValidId(data.userId) && data.userId == request.auth.uid &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 160 &&
+        data.phone is string && data.phone.size() >= 5 && data.phone.size() <= 30 &&
+        data.shippingAddress is string && data.shippingAddress.size() >= 5 && data.shippingAddress.size() <= 300 &&
+        data.postalCode is string && data.postalCode.size() >= 2 && data.postalCode.size() <= 20 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidCartItem(data) {
+      return data.keys().hasAll(['userId', 'productId', 'title', 'category', 'dealType', 'price', 'originalPrice', 'quantity', 'imageUrl', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['userId', 'productId', 'title', 'category', 'dealType', 'price', 'originalPrice', 'quantity', 'imageUrl', 'createdAt', 'updatedAt']) &&
+        data.userId is string && isValidId(data.userId) && data.userId == request.auth.uid &&
+        data.productId is string && isValidId(data.productId) &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 140 &&
+        data.category is string && data.category.size() >= 1 && data.category.size() <= 60 &&
+        data.dealType is string && data.dealType.size() >= 1 && data.dealType.size() <= 30 &&
+        data.dealType in ['new_user', 'flash_sale', 'choice_bundle', 'standard'] &&
+        data.price is number && data.price >= 0 && data.price <= 50000000 &&
+        data.originalPrice is number && data.originalPrice >= 0 && data.originalPrice <= 50000000 &&
+        data.quantity is number && data.quantity >= 1 && data.quantity <= 99 &&
+        data.imageUrl is string && data.imageUrl.size() >= 1 && data.imageUrl.size() <= 500 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidOrderRecord(data) {
+      return data.keys().hasAll(['userId', 'orderNumber', 'summaryTitle', 'itemCount', 'totalAmount', 'paymentMethod', 'pickupHubName', 'status', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['userId', 'orderNumber', 'summaryTitle', 'itemCount', 'totalAmount', 'paymentMethod', 'pickupHubName', 'status', 'createdAt', 'updatedAt']) &&
+        data.userId is string && isValidId(data.userId) && data.userId == request.auth.uid &&
+        data.orderNumber is string && data.orderNumber.size() >= 4 && data.orderNumber.size() <= 40 && data.orderNumber.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.summaryTitle is string && data.summaryTitle.size() >= 1 && data.summaryTitle.size() <= 200 &&
+        data.itemCount is number && data.itemCount >= 1 && data.itemCount <= 500 &&
+        data.totalAmount is number && data.totalAmount >= 0 && data.totalAmount <= 500000000 &&
+        data.paymentMethod is string && data.paymentMethod.size() >= 1 && data.paymentMethod.size() <= 30 &&
+        data.paymentMethod in ['cod', 'card_express'] &&
+        data.pickupHubName is string && data.pickupHubName.size() >= 2 && data.pickupHubName.size() <= 120 &&
+        data.status is string && data.status.size() >= 1 && data.status.size() <= 30 &&
+        data.status in ['processing', 'preparing', 'dispatched', 'in_transit', 'shipped', 'delivered', 'cancelled'] &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidWishlistItem(data) {
+      return data.keys().hasAll(['userId', 'productId', 'title', 'category', 'dealType', 'price', 'originalPrice', 'imageUrl', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['userId', 'productId', 'title', 'category', 'dealType', 'price', 'originalPrice', 'imageUrl', 'createdAt', 'updatedAt']) &&
+        data.userId is string && isValidId(data.userId) && data.userId == request.auth.uid &&
+        data.productId is string && isValidId(data.productId) &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 140 &&
+        data.category is string && data.category.size() >= 1 && data.category.size() <= 60 &&
+        data.dealType is string && data.dealType.size() >= 1 && data.dealType.size() <= 30 &&
+        data.dealType in ['new_user', 'flash_sale', 'choice_bundle', 'standard'] &&
+        data.price is number && data.price >= 0 && data.price <= 50000000 &&
+        data.originalPrice is number && data.originalPrice >= 0 && data.originalPrice <= 50000000 &&
+        data.imageUrl is string && data.imageUrl.size() >= 1 && data.imageUrl.size() <= 500 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidProductReview(data) {
+      return data.keys().hasAll(['reviewId', 'productId', 'userId', 'userName', 'userPhotoUrl', 'rating', 'comment', 'imageUrl', 'videoUrl', 'voiceUrl', 'verifiedPurchase', 'visibility', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['reviewId', 'productId', 'userId', 'userName', 'userPhotoUrl', 'rating', 'comment', 'imageUrl', 'videoUrl', 'voiceUrl', 'verifiedPurchase', 'visibility', 'createdAt', 'updatedAt']) &&
+        data.reviewId is string && isValidId(data.reviewId) &&
+        data.productId is string && isValidId(data.productId) &&
+        data.userId is string && isValidId(data.userId) && data.userId == request.auth.uid &&
+        data.userName is string && data.userName.size() >= 1 && data.userName.size() <= 80 &&
+        data.userPhotoUrl is string && data.userPhotoUrl.size() <= 500 &&
+        data.rating is number && data.rating >= 1 && data.rating <= 5 &&
+        data.comment is string && data.comment.size() >= 1 && data.comment.size() <= 1500 &&
+        data.imageUrl is string && data.imageUrl.size() <= 200000 &&
+        data.videoUrl is string && data.videoUrl.size() <= 200000 &&
+        data.voiceUrl is string && data.voiceUrl.size() <= 200000 &&
+        data.verifiedPurchase is bool &&
+        data.visibility is string && data.visibility.size() == 6 && data.visibility == 'public' &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidReviewReply(data) {
+      return data.keys().hasAll(['replyId', 'reviewId', 'productId', 'userId', 'userName', 'comment', 'visibility', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['replyId', 'reviewId', 'productId', 'userId', 'userName', 'comment', 'visibility', 'createdAt', 'updatedAt']) &&
+        data.replyId is string && isValidId(data.replyId) &&
+        data.reviewId is string && isValidId(data.reviewId) &&
+        data.productId is string && isValidId(data.productId) &&
+        data.userId is string && isValidId(data.userId) && data.userId == request.auth.uid &&
+        data.userName is string && data.userName.size() >= 1 && data.userName.size() <= 80 &&
+        data.comment is string && data.comment.size() >= 1 && data.comment.size() <= 1000 &&
+        data.visibility is string && data.visibility.size() == 6 && data.visibility == 'public' &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidProductQuestion(data) {
+      return data.keys().hasAll(['questionId', 'productId', 'userId', 'userName', 'questionText', 'visibility', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['questionId', 'productId', 'userId', 'userName', 'questionText', 'visibility', 'createdAt', 'updatedAt']) &&
+        data.questionId is string && isValidId(data.questionId) &&
+        data.productId is string && isValidId(data.productId) &&
+        data.userId is string && isValidId(data.userId) && data.userId == request.auth.uid &&
+        data.userName is string && data.userName.size() >= 1 && data.userName.size() <= 80 &&
+        data.questionText is string && data.questionText.size() >= 2 && data.questionText.size() <= 1000 &&
+        data.visibility is string && data.visibility.size() == 6 && data.visibility == 'public' &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidQuestionAnswer(data) {
+      return data.keys().hasAll(['answerId', 'questionId', 'productId', 'userId', 'userName', 'answerText', 'visibility', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['answerId', 'questionId', 'productId', 'userId', 'userName', 'answerText', 'visibility', 'createdAt', 'updatedAt']) &&
+        data.answerId is string && isValidId(data.answerId) &&
+        data.questionId is string && isValidId(data.questionId) &&
+        data.productId is string && isValidId(data.productId) &&
+        data.userId is string && isValidId(data.userId) && data.userId == request.auth.uid &&
+        data.userName is string && data.userName.size() >= 1 && data.userName.size() <= 80 &&
+        data.answerText is string && data.answerText.size() >= 1 && data.answerText.size() <= 1000 &&
+        data.visibility is string && data.visibility.size() == 6 && data.visibility == 'public' &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // Admins lookup collection (read-only for owner/admin)
+    match /admins/{adminId} {
+      allow get: if isVerifiedUser() && isValidId(adminId) && request.auth.uid == adminId;
+      allow list, create, update, delete: if false;
+    }
+
+    // 1. User Public Profile
+    match /users/{userId} {
+      allow get: if isVerifiedUser() && isValidId(userId) && (request.auth.uid == userId || isAdmin());
+      allow list: if false;
+
+      allow create: if isOwner(userId) &&
+        isValidId(userId) &&
+        isValidUserPublicProfile(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isOwner(userId) &&
+        isValidId(userId) &&
+        isValidUserPublicProfile(incoming()) &&
+        incoming().userId == existing().userId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          // Action: UpdateProfileOrClaimDeal
+          incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoUrl', 'newUserDealClaimed', 'updatedAt'])
+        );
+
+      allow delete: if isAdmin() && isValidId(userId);
+
+      // 2. Isolated Private PII Subcollection
+      match /private/{docId} {
+        allow get: if (isOwner(userId) || isAdmin()) && isValidId(userId) && isValidId(docId) && userParentExists(userId);
+        allow list: if false;
+
+        allow create: if isOwner(userId) &&
+          isValidId(userId) &&
+          isValidId(docId) &&
+          isValidUserPrivateInfo(incoming()) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          userParentExists(userId);
+
+        allow update: if isOwner(userId) &&
+          isValidId(userId) &&
+          isValidId(docId) &&
+          isValidUserPrivateInfo(incoming()) &&
+          incoming().userId == existing().userId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          userParentExists(userId) && (
+            isAdmin() ||
+            // Action: UpdateShippingInfo
+            incoming().diff(existing()).affectedKeys().hasOnly(['email', 'phone', 'shippingAddress', 'postalCode', 'updatedAt'])
+          );
+
+        allow delete: if isAdmin() && isValidId(userId) && isValidId(docId);
+      }
+
+      // 3. Shopping Cart Subcollection (Strictly for Registered/Authenticated Users)
+      match /cart/{itemId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(itemId) && userParentExists(userId);
+        allow list: if isOwner(userId) && existing().userId == request.auth.uid;
+
+        allow create: if isOwner(userId) &&
+          isValidId(userId) &&
+          isValidId(itemId) &&
+          isValidCartItem(incoming()) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          userParentExists(userId);
+
+        allow update: if isOwner(userId) &&
+          isValidId(userId) &&
+          isValidId(itemId) &&
+          isValidCartItem(incoming()) &&
+          incoming().userId == existing().userId &&
+          incoming().productId == existing().productId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          userParentExists(userId) && (
+            isAdmin() ||
+            // Action: UpdateQuantity
+            incoming().diff(existing()).affectedKeys().hasOnly(['quantity', 'price', 'dealType', 'updatedAt'])
+          );
+
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(itemId) && userParentExists(userId);
+      }
+
+      // 4. Orders Subcollection
+      match /orders/{orderId} {
+        allow get: if (isOwner(userId) || isAdmin()) && isValidId(userId) && isValidId(orderId) && userParentExists(userId);
+        allow list: if isOwner(userId) && existing().userId == request.auth.uid;
+
+        allow create: if isOwner(userId) &&
+          isValidId(userId) &&
+          isValidId(orderId) &&
+          isValidOrderRecord(incoming()) &&
+          incoming().status in ['processing', 'preparing'] &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          userParentExists(userId);
+
+        allow update: if isOwner(userId) &&
+          isValidId(userId) &&
+          isValidId(orderId) &&
+          isValidOrderRecord(incoming()) &&
+          incoming().userId == existing().userId &&
+          incoming().orderNumber == existing().orderNumber &&
+          incoming().totalAmount == existing().totalAmount &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          userParentExists(userId) && (
+            isAdmin() ||
+            // Action: CancelProcessingOrder (Terminal State Gate: only 'processing' or 'preparing' orders can be cancelled by buyer)
+            ((existing().status == 'processing' || existing().status == 'preparing') &&
+              incoming().status == 'cancelled' &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])) ||
+            // Action: AdvanceOrderTrackingStage (Terminal State Gate: locked once 'delivered' or 'cancelled')
+            (!(existing().status in ['delivered', 'cancelled']) &&
+              incoming().status in ['preparing', 'dispatched', 'in_transit', 'delivered'] &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']))
+          );
+
+        allow delete: if isAdmin() && isValidId(userId) && isValidId(orderId);
+      }
+
+      // 5. Wishlist Subcollection (Saved Products for Registered/Authenticated Users)
+      match /wishlist/{itemId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(itemId) && userParentExists(userId);
+        allow list: if isOwner(userId) && existing().userId == request.auth.uid;
+
+        allow create: if isOwner(userId) &&
+          isValidId(userId) &&
+          isValidId(itemId) &&
+          isValidWishlistItem(incoming()) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          userParentExists(userId);
+
+        allow update: if isOwner(userId) &&
+          isValidId(userId) &&
+          isValidId(itemId) &&
+          isValidWishlistItem(incoming()) &&
+          incoming().userId == existing().userId &&
+          incoming().productId == existing().productId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          userParentExists(userId) && (
+            isAdmin() ||
+            // Action: RefreshWishlistPricing
+            incoming().diff(existing()).affectedKeys().hasOnly(['price', 'originalPrice', 'dealType', 'updatedAt'])
+          );
+
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(itemId) && userParentExists(userId);
+      }
+    }
+
+    // 6. Product Reviews Collection (5-Star Ratings, Text, Images, Videos & Voice Notes)
+    match /product_reviews/{reviewId} {
+      allow get: if isValidId(reviewId) && existing().visibility == 'public';
+      allow list: if existing().visibility == 'public';
+
+      allow create: if isVerifiedUser() &&
+        isValidId(reviewId) &&
+        isValidProductReview(incoming()) &&
+        incoming().reviewId == reviewId &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        userParentExists(request.auth.uid);
+
+      allow update: if isVerifiedUser() &&
+        isValidId(reviewId) &&
+        isValidProductReview(incoming()) &&
+        incoming().reviewId == existing().reviewId &&
+        incoming().productId == existing().productId &&
+        incoming().userId == existing().userId &&
+        incoming().visibility == existing().visibility &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        userParentExists(request.auth.uid) && (
+          isAdmin() ||
+          // Action: EditOwnReview
+          (existing().userId == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['rating', 'comment', 'imageUrl', 'videoUrl', 'voiceUrl', 'updatedAt']))
+        );
+
+      allow delete: if isVerifiedUser() && isValidId(reviewId) && (existing().userId == request.auth.uid || isAdmin());
+    }
+
+    // 7. Review Replies Collection (Users Replying to Other Reviews)
+    match /review_replies/{replyId} {
+      allow get: if isValidId(replyId) && existing().visibility == 'public';
+      allow list: if existing().visibility == 'public';
+
+      allow create: if isVerifiedUser() &&
+        isValidId(replyId) &&
+        isValidReviewReply(incoming()) &&
+        incoming().replyId == replyId &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        userParentExists(request.auth.uid) &&
+        reviewParentExists(incoming().reviewId);
+
+      allow update: if isVerifiedUser() &&
+        isValidId(replyId) &&
+        isValidReviewReply(incoming()) &&
+        incoming().replyId == existing().replyId &&
+        incoming().reviewId == existing().reviewId &&
+        incoming().productId == existing().productId &&
+        incoming().userId == existing().userId &&
+        incoming().visibility == existing().visibility &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        userParentExists(request.auth.uid) &&
+        reviewParentExists(existing().reviewId) && (
+          isAdmin() ||
+          // Action: EditOwnReply
+          (existing().userId == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['comment', 'updatedAt']))
+        );
+
+      allow delete: if isVerifiedUser() && isValidId(replyId) && (existing().userId == request.auth.uid || isAdmin());
+    }
+
+    // 8. Product Questions Collection (Ask Questions Product by Product)
+    match /product_questions/{questionId} {
+      allow get: if isValidId(questionId) && existing().visibility == 'public';
+      allow list: if existing().visibility == 'public';
+
+      allow create: if isVerifiedUser() &&
+        isValidId(questionId) &&
+        isValidProductQuestion(incoming()) &&
+        incoming().questionId == questionId &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        userParentExists(request.auth.uid);
+
+      allow update: if isVerifiedUser() &&
+        isValidId(questionId) &&
+        isValidProductQuestion(incoming()) &&
+        incoming().questionId == existing().questionId &&
+        incoming().productId == existing().productId &&
+        incoming().userId == existing().userId &&
+        incoming().visibility == existing().visibility &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        userParentExists(request.auth.uid) && (
+          isAdmin() ||
+          // Action: EditOwnQuestion
+          (existing().userId == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['questionText', 'updatedAt']))
+        );
+
+      allow delete: if isVerifiedUser() && isValidId(questionId) && (existing().userId == request.auth.uid || isAdmin());
+    }
+
+    // 9. Question Answers Collection (Answers to Product Questions)
+    match /question_answers/{answerId} {
+      allow get: if isValidId(answerId) && existing().visibility == 'public';
+      allow list: if existing().visibility == 'public';
+
+      allow create: if isVerifiedUser() &&
+        isValidId(answerId) &&
+        isValidQuestionAnswer(incoming()) &&
+        incoming().answerId == answerId &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        userParentExists(request.auth.uid) &&
+        questionParentExists(incoming().questionId);
+
+      allow update: if isVerifiedUser() &&
+        isValidId(answerId) &&
+        isValidQuestionAnswer(incoming()) &&
+        incoming().answerId == existing().answerId &&
+        incoming().questionId == existing().questionId &&
+        incoming().productId == existing().productId &&
+        incoming().userId == existing().userId &&
+        incoming().visibility == existing().visibility &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        userParentExists(request.auth.uid) &&
+        questionParentExists(existing().questionId) && (
+          isAdmin() ||
+          // Action: EditOwnAnswer
+          (existing().userId == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['answerText', 'updatedAt']))
+        );
+
+      allow delete: if isVerifiedUser() && isValidId(answerId) && (existing().userId == request.auth.uid || isAdmin());
+    }
+  }
+}

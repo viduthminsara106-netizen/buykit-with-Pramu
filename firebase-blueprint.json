@@ -1,0 +1,611 @@
+{
+  "entities": {
+    "UserPublicProfile": {
+      "title": "UserPublicProfile",
+      "description": "Public profile document for a registered BuyKit with Pramu shopper.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the user.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Public display name of the shopper.",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "photoUrl": {
+          "type": "string",
+          "description": "Avatar URL for the shopper.",
+          "minLength": 0,
+          "maxLength": 500
+        },
+        "newUserDealClaimed": {
+          "type": "boolean",
+          "description": "Whether the shopper has claimed their New User welcome voucher."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the account was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the profile was last updated."
+        }
+      },
+      "required": ["userId", "displayName", "photoUrl", "newUserDealClaimed", "createdAt", "updatedAt"]
+    },
+    "UserPrivateInfo": {
+      "title": "UserPrivateInfo",
+      "description": "Isolated private PII document containing contact and shipping address details.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the owner.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Verified email address of the user.",
+          "minLength": 3,
+          "maxLength": 160
+        },
+        "phone": {
+          "type": "string",
+          "description": "Contact phone number for delivery updates.",
+          "minLength": 5,
+          "maxLength": 30
+        },
+        "shippingAddress": {
+          "type": "string",
+          "description": "Street and city delivery address.",
+          "minLength": 5,
+          "maxLength": 300
+        },
+        "postalCode": {
+          "type": "string",
+          "description": "Postal or ZIP code.",
+          "minLength": 2,
+          "maxLength": 20
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of creation."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of last update."
+        }
+      },
+      "required": ["userId", "email", "phone", "shippingAddress", "postalCode", "createdAt", "updatedAt"]
+    },
+    "CartItem": {
+      "title": "CartItem",
+      "description": "Individual product item in a registered user's shopping cart.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the cart owner.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "productId": {
+          "type": "string",
+          "description": "Unique product identifier.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "title": {
+          "type": "string",
+          "description": "Product display title.",
+          "minLength": 1,
+          "maxLength": 140
+        },
+        "category": {
+          "type": "string",
+          "description": "Product category label.",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "dealType": {
+          "type": "string",
+          "description": "Deal tier applied to this item.",
+          "enum": ["new_user", "flash_sale", "choice_bundle", "standard"],
+          "minLength": 1,
+          "maxLength": 30
+        },
+        "price": {
+          "type": "number",
+          "description": "Unit sale price in LKR."
+        },
+        "originalPrice": {
+          "type": "number",
+          "description": "Original list price in LKR."
+        },
+        "quantity": {
+          "type": "number",
+          "description": "Quantity in cart (1 to 99)."
+        },
+        "imageUrl": {
+          "type": "string",
+          "description": "Product thumbnail path or URL.",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when added to cart."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when quantity was last updated."
+        }
+      },
+      "required": ["userId", "productId", "title", "category", "dealType", "price", "originalPrice", "quantity", "imageUrl", "createdAt", "updatedAt"]
+    },
+    "OrderRecord": {
+      "title": "OrderRecord",
+      "description": "Confirmed purchase order placed by a registered shopper.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the buyer.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "orderNumber": {
+          "type": "string",
+          "description": "Human-readable order reference code.",
+          "minLength": 4,
+          "maxLength": 40,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "summaryTitle": {
+          "type": "string",
+          "description": "Summary of ordered items.",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "itemCount": {
+          "type": "number",
+          "description": "Total number of items in the order."
+        },
+        "totalAmount": {
+          "type": "number",
+          "description": "Final order total in LKR."
+        },
+        "paymentMethod": {
+          "type": "string",
+          "description": "Selected payment method.",
+          "enum": ["cod", "card_express"],
+          "minLength": 1,
+          "maxLength": 30
+        },
+        "pickupHubName": {
+          "type": "string",
+          "description": "Selected delivery or pickup hub name.",
+          "minLength": 2,
+          "maxLength": 120
+        },
+        "status": {
+          "type": "string",
+          "description": "Order fulfillment and tracking stage status.",
+          "enum": ["processing", "preparing", "dispatched", "in_transit", "shipped", "delivered", "cancelled"],
+          "minLength": 1,
+          "maxLength": 30
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when order was placed."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when order was last updated."
+        }
+      },
+      "required": ["userId", "orderNumber", "summaryTitle", "itemCount", "totalAmount", "paymentMethod", "pickupHubName", "status", "createdAt", "updatedAt"]
+    },
+    "WishlistItem": {
+      "title": "WishlistItem",
+      "description": "Saved product item in a registered user's wishlist.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the wishlist owner.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "productId": {
+          "type": "string",
+          "description": "Unique product identifier.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "title": {
+          "type": "string",
+          "description": "Product display title.",
+          "minLength": 1,
+          "maxLength": 140
+        },
+        "category": {
+          "type": "string",
+          "description": "Product category label.",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "dealType": {
+          "type": "string",
+          "description": "Deal tier applied to this item.",
+          "enum": ["new_user", "flash_sale", "choice_bundle", "standard"],
+          "minLength": 1,
+          "maxLength": 30
+        },
+        "price": {
+          "type": "number",
+          "description": "Unit sale price in LKR."
+        },
+        "originalPrice": {
+          "type": "number",
+          "description": "Original list price in LKR."
+        },
+        "imageUrl": {
+          "type": "string",
+          "description": "Product thumbnail path or URL.",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when saved to wishlist."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when wishlist item was last updated."
+        }
+      },
+      "required": ["userId", "productId", "title", "category", "dealType", "price", "originalPrice", "imageUrl", "createdAt", "updatedAt"]
+    },
+    "ProductReview": {
+      "title": "ProductReview",
+      "description": "Customer 5-star product review with optional text, image, video, and voice attachments.",
+      "type": "object",
+      "properties": {
+        "reviewId": {
+          "type": "string",
+          "description": "Unique review identifier.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "productId": {
+          "type": "string",
+          "description": "Reviewed product identifier.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the reviewer.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userName": {
+          "type": "string",
+          "description": "Display name of the reviewer.",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "userPhotoUrl": {
+          "type": "string",
+          "description": "Avatar URL of the reviewer.",
+          "minLength": 0,
+          "maxLength": 500
+        },
+        "rating": {
+          "type": "number",
+          "description": "Star rating from 1 to 5."
+        },
+        "comment": {
+          "type": "string",
+          "description": "Written review comment.",
+          "minLength": 1,
+          "maxLength": 1500
+        },
+        "imageUrl": {
+          "type": "string",
+          "description": "Optional attached review image URL or compressed data URL.",
+          "minLength": 0,
+          "maxLength": 200000
+        },
+        "videoUrl": {
+          "type": "string",
+          "description": "Optional attached review video URL or clip data URL.",
+          "minLength": 0,
+          "maxLength": 200000
+        },
+        "voiceUrl": {
+          "type": "string",
+          "description": "Optional recorded voice review audio data URL.",
+          "minLength": 0,
+          "maxLength": 200000
+        },
+        "verifiedPurchase": {
+          "type": "boolean",
+          "description": "Whether the reviewer purchased the item on BuyKit."
+        },
+        "visibility": {
+          "type": "string",
+          "description": "Public visibility flag for query enforcement.",
+          "enum": ["public"],
+          "minLength": 6,
+          "maxLength": 6
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when review was posted."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when review was last updated."
+        }
+      },
+      "required": ["reviewId", "productId", "userId", "userName", "userPhotoUrl", "rating", "comment", "imageUrl", "videoUrl", "voiceUrl", "verifiedPurchase", "visibility", "createdAt", "updatedAt"]
+    },
+    "ReviewReply": {
+      "title": "ReviewReply",
+      "description": "Reply posted by an authenticated user to an existing product review.",
+      "type": "object",
+      "properties": {
+        "replyId": {
+          "type": "string",
+          "description": "Unique reply identifier.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "reviewId": {
+          "type": "string",
+          "description": "Parent review identifier.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "productId": {
+          "type": "string",
+          "description": "Product identifier.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the reply author.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userName": {
+          "type": "string",
+          "description": "Display name of the reply author.",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "comment": {
+          "type": "string",
+          "description": "Reply text.",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "visibility": {
+          "type": "string",
+          "description": "Public visibility flag for query enforcement.",
+          "enum": ["public"],
+          "minLength": 6,
+          "maxLength": 6
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when reply was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when reply was updated."
+        }
+      },
+      "required": ["replyId", "reviewId", "productId", "userId", "userName", "comment", "visibility", "createdAt", "updatedAt"]
+    },
+    "ProductQuestion": {
+      "title": "ProductQuestion",
+      "description": "Customer question asked about a specific product.",
+      "type": "object",
+      "properties": {
+        "questionId": {
+          "type": "string",
+          "description": "Unique question identifier.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "productId": {
+          "type": "string",
+          "description": "Product identifier.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the shopper asking the question.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userName": {
+          "type": "string",
+          "description": "Display name of the question author.",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "questionText": {
+          "type": "string",
+          "description": "Question text.",
+          "minLength": 2,
+          "maxLength": 1000
+        },
+        "visibility": {
+          "type": "string",
+          "description": "Public visibility flag for query enforcement.",
+          "enum": ["public"],
+          "minLength": 6,
+          "maxLength": 6
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when question was posted."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when question was last updated."
+        }
+      },
+      "required": ["questionId", "productId", "userId", "userName", "questionText", "visibility", "createdAt", "updatedAt"]
+    },
+    "QuestionAnswer": {
+      "title": "QuestionAnswer",
+      "description": "Community or merchant answer to a customer's product question.",
+      "type": "object",
+      "properties": {
+        "answerId": {
+          "type": "string",
+          "description": "Unique answer identifier.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "questionId": {
+          "type": "string",
+          "description": "Parent question identifier.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "productId": {
+          "type": "string",
+          "description": "Product identifier.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the responder.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userName": {
+          "type": "string",
+          "description": "Display name of the responder.",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "answerText": {
+          "type": "string",
+          "description": "Answer text.",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "visibility": {
+          "type": "string",
+          "description": "Public visibility flag for query enforcement.",
+          "enum": ["public"],
+          "minLength": 6,
+          "maxLength": 6
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when answer was posted."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when answer was last updated."
+        }
+      },
+      "required": ["answerId", "questionId", "productId", "userId", "userName", "answerText", "visibility", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserPublicProfile" },
+      "description": "Stores public profile and new-user voucher status for each authenticated user."
+    },
+    "/users/{userId}/private/{docId}": {
+      "schema": { "$ref": "#/entities/UserPrivateInfo" },
+      "description": "Stores isolated PII (email, phone, shipping address) strictly accessible only by the owner."
+    },
+    "/users/{userId}/cart/{itemId}": {
+      "schema": { "$ref": "#/entities/CartItem" },
+      "description": "Stores individual shopping cart line items belonging to the authenticated user."
+    },
+    "/users/{userId}/orders/{orderId}": {
+      "schema": { "$ref": "#/entities/OrderRecord" },
+      "description": "Stores purchase orders placed by the authenticated user."
+    },
+    "/users/{userId}/wishlist/{itemId}": {
+      "schema": { "$ref": "#/entities/WishlistItem" },
+      "description": "Stores saved wishlist products belonging to the authenticated user."
+    },
+    "/product_reviews/{reviewId}": {
+      "schema": { "$ref": "#/entities/ProductReview" },
+      "description": "Stores 5-star customer reviews with text, image, video, and voice media for marketplace products."
+    },
+    "/review_replies/{replyId}": {
+      "schema": { "$ref": "#/entities/ReviewReply" },
+      "description": "Stores user replies to product reviews."
+    },
+    "/product_questions/{questionId}": {
+      "schema": { "$ref": "#/entities/ProductQuestion" },
+      "description": "Stores customer questions asked on individual products."
+    },
+    "/question_answers/{answerId}": {
+      "schema": { "$ref": "#/entities/QuestionAnswer" },
+      "description": "Stores answers to customer product questions."
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "BuyKit with Pramu",
+  "description": "Global online marketplace and business store featuring new user deals, flash sales, verified merchant hubs, AI product studio, and secure shopping cart.",
+  "requestFramePermissions": ["geolocation", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
