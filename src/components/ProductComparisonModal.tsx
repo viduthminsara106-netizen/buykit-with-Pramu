@@ -19,6 +19,7 @@ import {
   Lock,
 } from 'lucide-react';
 import { MarketplaceProduct, formatLKR } from '../data/catalog';
+import { resolveAssetUrl } from '../utils/assetResolver';
 
 export interface ProductRatingSummary {
   averageRating: number;
@@ -276,9 +277,11 @@ export const ProductComparisonModal: React.FC<ProductComparisonModalProps> = ({
                                 className="group relative mx-auto h-36 w-36 cursor-pointer overflow-hidden rounded-xl border border-slate-200 bg-[#F4F3EF]"
                               >
                                 <img
-                                  src={product.imageUrl}
+                                  src={resolveAssetUrl(product.imageUrl)}
                                   alt={product.title}
-                                  className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+                                  loading="lazy"
+                                  decoding="async"
+                                  className="h-full w-full object-cover"
                                 />
                                 <span
                                   className={`absolute top-1.5 left-1.5 rounded px-1.5 py-0.5 text-[10px] font-extrabold text-white uppercase shadow-2xs ${
@@ -787,8 +790,10 @@ export const ProductComparisonModal: React.FC<ProductComparisonModalProps> = ({
                         >
                           <div className="flex min-w-0 items-center gap-2.5">
                             <img
-                              src={cand.imageUrl}
+                              src={resolveAssetUrl(cand.imageUrl)}
                               alt={cand.title}
+                              loading="lazy"
+                              decoding="async"
                               className="h-12 w-12 shrink-0 rounded-lg bg-[#F4F3EF] object-cover"
                             />
                             <div className="min-w-0">
@@ -931,8 +936,10 @@ export const FloatingCompareBar: React.FC<FloatingCompareBarProps> = ({
                     className="flex min-w-0 cursor-pointer items-center gap-2"
                   >
                     <img
-                      src={prod.imageUrl}
+                      src={resolveAssetUrl(prod.imageUrl)}
                       alt={prod.title}
+                      loading="lazy"
+                      decoding="async"
                       className="h-10 w-10 shrink-0 rounded-lg bg-white object-cover"
                     />
                     <div className="min-w-0">

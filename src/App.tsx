@@ -127,8 +127,15 @@ import {
 } from './utils/multiAgentStorefront';
 import { StorefrontPromoAndSalesShowcase } from './components/StorefrontPromoAndSalesShowcase';
 import { AdminStorefrontStudioModal } from './components/AdminStorefrontStudioModal';
+import {
+  OptimizedImage,
+  resolveAssetUrl,
+  detectSlowConnection,
+} from './utils/assetResolver';
 
-export const BUYKIT_LOGO_ASSET = '/assets/aistudio/Screenshot_20261107_191852_81defece.jpg';
+export const BUYKIT_LOGO_ASSET = resolveAssetUrl(
+  '/assets/aistudio/Screenshot_20261107_191852_81defece.jpg'
+);
 
 type BottomTab = 'home' | 'shop' | 'buykit' | 'cart' | 'account';
 type SortOption = 'popular' | 'price_asc' | 'price_desc' | 'rating' | 'discount';
@@ -185,42 +192,42 @@ const DEPARTMENT_META: Record<
   'Audio & Headphones': {
     shortLabel: 'Audio & ANC',
     subtitle: 'Hi-Res & Earbuds',
-    thumbnailUrl: '/src/assets/images/product_audio_headphones_1794121197272.jpg',
+    thumbnailUrl: resolveAssetUrl('/src/assets/images/product_audio_headphones_1794121197272.jpg'),
     accentColor: 'from-orange-500 to-amber-500',
     icon: Headphones,
   },
   'Smartwatches & Wearables': {
     shortLabel: 'Smartwatches',
     subtitle: 'AMOLED & GPS',
-    thumbnailUrl: '/src/assets/images/product_smartwatch_pro_1794121197679.jpg',
+    thumbnailUrl: resolveAssetUrl('/src/assets/images/product_smartwatch_pro_1794121197679.jpg'),
     accentColor: 'from-blue-600 to-cyan-500',
     icon: Watch,
   },
   'Cameras & Drones': {
     shortLabel: 'Cameras & Drones',
     subtitle: '4K Gimbal & Action',
-    thumbnailUrl: '/src/assets/images/product_camera_drone_1794121198906.jpg',
+    thumbnailUrl: resolveAssetUrl('/src/assets/images/product_camera_drone_1794121198906.jpg'),
     accentColor: 'from-emerald-600 to-teal-500',
     icon: Camera,
   },
   'Computer & Office': {
     shortLabel: 'Computer & Office',
     subtitle: 'GaN Hubs & Docks',
-    thumbnailUrl: '/src/assets/images/product_powerbank_charger_1794123346828.jpg',
+    thumbnailUrl: resolveAssetUrl('/src/assets/images/product_powerbank_charger_1794123346828.jpg'),
     accentColor: 'from-slate-800 to-slate-600',
     icon: Laptop,
   },
   'Home & Lifestyle': {
     shortLabel: 'Home & Espresso',
     subtitle: 'Barista & Smart Home',
-    thumbnailUrl: '/src/assets/images/product_espresso_maker_1794123345741.jpg',
+    thumbnailUrl: resolveAssetUrl('/src/assets/images/product_espresso_maker_1794123345741.jpg'),
     accentColor: 'from-amber-600 to-orange-500',
     icon: Coffee,
   },
   'Mobile & Gaming Gear': {
     shortLabel: 'Mobile & Gaming',
     subtitle: 'Mech & Controllers',
-    thumbnailUrl: '/src/assets/images/product_gaming_controller_1794123345268.jpg',
+    thumbnailUrl: resolveAssetUrl('/src/assets/images/product_gaming_controller_1794123345268.jpg'),
     accentColor: 'from-rose-600 to-orange-500',
     icon: Gamepad2,
   },
@@ -250,7 +257,7 @@ const INITIAL_ADMIN_PROMO_BANNERS: AdminPromoBanner[] = [
     dealPrice: 6900,
     originalPrice: 22500,
     soldLabel: '14,300+ Sold',
-    imageUrl: '/src/assets/images/product_powerbank_charger_1794123346828.jpg',
+    imageUrl: resolveAssetUrl('/src/assets/images/product_powerbank_charger_1794123346828.jpg'),
   },
   {
     id: 'banner_mega_discount_anc',
@@ -262,7 +269,7 @@ const INITIAL_ADMIN_PROMO_BANNERS: AdminPromoBanner[] = [
     dealPrice: 14500,
     originalPrice: 52500,
     soldLabel: '4,820+ Sold',
-    imageUrl: '/src/assets/images/product_audio_headphones_1794121197272.jpg',
+    imageUrl: resolveAssetUrl('/src/assets/images/product_audio_headphones_1794121197272.jpg'),
   },
   {
     id: 'banner_bestseller_powerbank',
@@ -274,7 +281,7 @@ const INITIAL_ADMIN_PROMO_BANNERS: AdminPromoBanner[] = [
     dealPrice: 14900,
     originalPrice: 37000,
     soldLabel: '11,240+ Sold',
-    imageUrl: '/src/assets/images/product_powerbank_charger_1794123346828.jpg',
+    imageUrl: resolveAssetUrl('/src/assets/images/product_powerbank_charger_1794123346828.jpg'),
   },
   {
     id: 'banner_flash_smartwatch',
@@ -286,7 +293,7 @@ const INITIAL_ADMIN_PROMO_BANNERS: AdminPromoBanner[] = [
     dealPrice: 29500,
     originalPrice: 64900,
     soldLabel: '3,190+ Sold',
-    imageUrl: '/src/assets/images/product_smartwatch_pro_1794121197679.jpg',
+    imageUrl: resolveAssetUrl('/src/assets/images/product_smartwatch_pro_1794121197679.jpg'),
   },
   {
     id: 'banner_hot_gaming_bundle',
@@ -298,7 +305,7 @@ const INITIAL_ADMIN_PROMO_BANNERS: AdminPromoBanner[] = [
     dealPrice: 10900,
     originalPrice: 35500,
     soldLabel: '7,340+ Sold',
-    imageUrl: '/src/assets/images/product_gaming_controller_1794123345268.jpg',
+    imageUrl: resolveAssetUrl('/src/assets/images/product_gaming_controller_1794123345268.jpg'),
   },
   {
     id: 'banner_choice_drone_4k',
@@ -310,7 +317,7 @@ const INITIAL_ADMIN_PROMO_BANNERS: AdminPromoBanner[] = [
     dealPrice: 66900,
     originalPrice: 115900,
     soldLabel: '1,940+ Sold',
-    imageUrl: '/src/assets/images/product_camera_drone_1794121198906.jpg',
+    imageUrl: resolveAssetUrl('/src/assets/images/product_camera_drone_1794121198906.jpg'),
   },
   {
     id: 'banner_home_espresso_sale',
@@ -322,7 +329,7 @@ const INITIAL_ADMIN_PROMO_BANNERS: AdminPromoBanner[] = [
     dealPrice: 42900,
     originalPrice: 88000,
     soldLabel: '1,680+ Sold',
-    imageUrl: '/src/assets/images/product_espresso_maker_1794123345741.jpg',
+    imageUrl: resolveAssetUrl('/src/assets/images/product_espresso_maker_1794123345741.jpg'),
   },
 ];
 
@@ -338,7 +345,7 @@ const QUICK_SEARCH_TAGS = [
 
 /**
  * Official BuyKit Logo Emblem Component using the uploaded logo asset
- * (/assets/aistudio/Screenshot_20261107_191852_81defece.jpg) cropped to the center logo mark.
+ * cropped to the center logo mark.
  */
 const BuyKitLogoBadge: React.FC<{ size?: 'sm' | 'md' | 'lg' }> = ({ size = 'md' }) => {
   const dimensions =
@@ -355,6 +362,7 @@ const BuyKitLogoBadge: React.FC<{ size?: 'sm' | 'md' | 'lg' }> = ({ size = 'md' 
       <img
         src={BUYKIT_LOGO_ASSET}
         alt="BuyKit Official Logo"
+        decoding="async"
         className="h-full w-full scale-[2.15] object-cover object-center"
       />
     </div>
@@ -365,25 +373,14 @@ const SmartImage: React.FC<{
   src: string;
   alt: string;
   className?: string;
-}> = ({ src, alt, className = '' }) => {
-  const [failed, setFailed] = useState(false);
-  if (failed || !src) {
-    return (
-      <div
-        className={`flex flex-col items-center justify-center bg-gradient-to-br from-slate-100 via-stone-100 to-orange-50/60 p-4 text-center ${className}`}
-      >
-        <ShoppingBag className="mb-1.5 h-7 w-7 text-slate-400" />
-        <span className="line-clamp-2 text-xs font-medium text-slate-600">{alt}</span>
-      </div>
-    );
-  }
+  priority?: boolean;
+}> = ({ src, alt, className = '', priority = false }) => {
   return (
-    <img
+    <OptimizedImage
       src={src}
       alt={alt}
-      referrerPolicy="no-referrer"
-      onError={() => setFailed(true)}
       className={className}
+      priority={priority}
     />
   );
 };
@@ -523,6 +520,33 @@ export default function App() {
   const [selectedHubName, setSelectedHubName] = useState('BuyKit Colombo Central Hub');
   const [checkoutSubmitting, setCheckoutSubmitting] = useState(false);
   const [toastBanner, setToastBanner] = useState<string | null>(null);
+  const [isLowConnectionMode, setIsLowConnectionMode] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('buykit_low_data_mode');
+      if (saved === 'true') return true;
+      if (saved === 'false') return false;
+    } catch {
+      // ignore
+    }
+    return detectSlowConnection();
+  });
+
+  const handleToggleLowConnectionMode = () => {
+    setIsLowConnectionMode((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem('buykit_low_data_mode', String(next));
+      } catch {
+        // ignore
+      }
+      showToast(
+        next
+          ? 'Lite / Low-Data Mode Enabled — Optimized for slow connections!'
+          : 'Standard High-Speed Mode Enabled.'
+      );
+      return next;
+    });
+  };
 
   const openAccountSettings = (tab: SettingsTabKey = 'profile') => {
     setSettingsModalTab(tab);
@@ -543,21 +567,64 @@ export default function App() {
     categoryScrollRef.current.scrollBy({ left: offset, behavior: 'smooth' });
   };
 
-  // Auto-advance Admin Promo Banner Carousel & Flash Sale Countdown
+  // Auto-advance Admin Promo Banner Carousel & Flash Sale Countdown (pauses auto-carousel in Low-Data Mode to save bandwidth)
   useEffect(() => {
-    const slideInterval = window.setInterval(() => {
-      setHeroSlideIndex((prev) => (prev + 1) % adminBanners.length);
-    }, 4800);
+    const slideInterval = isLowConnectionMode
+      ? null
+      : window.setInterval(() => {
+          setHeroSlideIndex((prev) => (prev + 1) % adminBanners.length);
+        }, 4800);
 
     const timerInterval = window.setInterval(() => {
       setCountdownSeconds((prev) => (prev > 0 ? prev - 1 : 5 * 3600));
     }, 1000);
 
     return () => {
-      window.clearInterval(slideInterval);
+      if (slideInterval) window.clearInterval(slideInterval);
       window.clearInterval(timerInterval);
     };
-  }, [adminBanners.length]);
+  }, [adminBanners.length, isLowConnectionMode]);
+
+  // Prevent accidental pinch-zoom, trackpad Ctrl+wheel zoom, and keyboard Ctrl+/- zoom anywhere on the site
+  useEffect(() => {
+    const preventWheelZoom = (e: WheelEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+      }
+    };
+    const preventKeyZoom = (e: KeyboardEvent) => {
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        (e.key === '+' || e.key === '-' || e.key === '=' || e.key === '0')
+      ) {
+        e.preventDefault();
+      }
+    };
+    const preventMultiTouchZoom = (e: TouchEvent) => {
+      if (e.touches && e.touches.length > 1) {
+        e.preventDefault();
+      }
+    };
+    const preventGestureZoom = (e: Event) => {
+      e.preventDefault();
+    };
+
+    window.addEventListener('wheel', preventWheelZoom, { passive: false });
+    window.addEventListener('keydown', preventKeyZoom);
+    document.addEventListener('touchmove', preventMultiTouchZoom, { passive: false });
+    document.addEventListener('gesturestart', preventGestureZoom);
+    document.addEventListener('gesturechange', preventGestureZoom);
+    document.addEventListener('gestureend', preventGestureZoom);
+
+    return () => {
+      window.removeEventListener('wheel', preventWheelZoom);
+      window.removeEventListener('keydown', preventKeyZoom);
+      document.removeEventListener('touchmove', preventMultiTouchZoom);
+      document.removeEventListener('gesturestart', preventGestureZoom);
+      document.removeEventListener('gesturechange', preventGestureZoom);
+      document.removeEventListener('gestureend', preventGestureZoom);
+    };
+  }, []);
 
   const formattedCountdown = useMemo(() => {
     const hrs = String(Math.floor(countdownSeconds / 3600)).padStart(2, '0');
@@ -1803,7 +1870,7 @@ export default function App() {
               <SmartImage
                 src={HERO_BANNER_IMAGE}
                 alt="All Categories"
-                className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-110"
+                className="h-full w-full object-cover"
               />
               <span
                 className={`absolute right-0.5 bottom-0.5 flex h-4 w-4 items-center justify-center rounded-md shadow-2xs ${
@@ -1852,7 +1919,7 @@ export default function App() {
                   <SmartImage
                     src={representativeThumb}
                     alt={meta.shortLabel}
-                    className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-110"
+                    className="h-full w-full object-cover"
                   />
                   <span
                     className={`absolute right-0.5 bottom-0.5 flex h-4 w-4 items-center justify-center rounded-md bg-gradient-to-br ${meta.accentColor} text-white shadow-2xs`}
@@ -1892,7 +1959,7 @@ export default function App() {
               <SmartImage
                 src="/src/assets/images/promo_poster_mega_sale_1794319674629.jpg"
                 alt="Flash Sale"
-                className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-110"
+                className="h-full w-full object-cover"
               />
               <span className="absolute right-0.5 bottom-0.5 flex h-4 w-4 items-center justify-center rounded-md bg-[#F85606] text-white shadow-2xs">
                 <Zap className="h-2.5 w-2.5" />
@@ -1927,7 +1994,7 @@ export default function App() {
               <SmartImage
                 src="/src/assets/images/promo_poster_flash_festival_1794319675114.jpg"
                 alt="New User Zone"
-                className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-110"
+                className="h-full w-full object-cover"
               />
               <span className="absolute right-0.5 bottom-0.5 flex h-4 w-4 items-center justify-center rounded-md bg-[#F85606] text-white shadow-2xs">
                 <Tag className="h-2.5 w-2.5" />
@@ -1962,7 +2029,7 @@ export default function App() {
               <SmartImage
                 src="/src/assets/images/promo_poster_home_lifestyle_1794319676096.jpg"
                 alt="Choice Bundles"
-                className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-110"
+                className="h-full w-full object-cover"
               />
               <span className="absolute right-0.5 bottom-0.5 flex h-4 w-4 items-center justify-center rounded-md bg-emerald-600 text-white shadow-2xs">
                 <ShieldCheck className="h-2.5 w-2.5" />
@@ -1994,7 +2061,7 @@ export default function App() {
               <SmartImage
                 src="/src/assets/images/product_powerbank_charger_1794123346828.jpg"
                 alt="Under Rs. 10,000"
-                className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-110"
+                className="h-full w-full object-cover"
               />
               <span className="absolute right-0.5 bottom-0.5 flex h-4 w-4 items-center justify-center rounded-md bg-amber-500 text-white shadow-2xs">
                 <Star className="h-2.5 w-2.5" />
@@ -2081,7 +2148,7 @@ export default function App() {
           <SmartImage
             src={product.imageUrl}
             alt={product.title}
-            className={`h-full w-full object-cover transition-transform duration-300 group-hover:scale-105 ${
+            className={`h-full w-full object-cover ${
               !isInStock ? 'opacity-80 grayscale-[20%]' : ''
             }`}
           />
@@ -2091,7 +2158,7 @@ export default function App() {
             type="button"
             onClick={(e) => handleToggleProductStock(product.id, e)}
             title="Click to toggle In Stock (Green) / Out of Stock (Red)"
-            className={`absolute top-2 left-2 z-10 inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[10px] font-extrabold tracking-wide text-white uppercase shadow-sm transition-transform hover:scale-105 ${
+            className={`absolute top-2 left-2 z-10 inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[10px] font-extrabold tracking-wide text-white uppercase shadow-sm transition-colors ${
               isInStock
                 ? 'border border-emerald-300/70 bg-emerald-600 hover:bg-emerald-700'
                 : 'border border-red-300/70 bg-red-600 hover:bg-red-700'
@@ -2282,8 +2349,22 @@ export default function App() {
           </button>
         </nav>
 
-        {/* Zone 3: Top-Right Country Flag + Language, Settings & Cart / Login CTA */}
+        {/* Zone 3: Top-Right Low-Data Mode Toggle, Country Flag + Language, Settings & Cart / Login CTA */}
         <div className="flex items-center gap-2 sm:gap-2.5 shrink-0">
+          <button
+            type="button"
+            onClick={handleToggleLowConnectionMode}
+            title="Toggle Lite / Low-Connection Data Saver Mode"
+            className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-[11px] font-extrabold transition-colors whitespace-nowrap shrink-0 ${
+              isLowConnectionMode
+                ? 'border-emerald-300 bg-emerald-50 text-emerald-800'
+                : 'border-slate-200 bg-slate-50 text-slate-600 hover:border-[#F85606] hover:text-[#F85606]'
+            }`}
+          >
+            <Zap className={`h-3.5 w-3.5 ${isLowConnectionMode ? 'text-emerald-600' : 'text-[#F85606]'}`} />
+            <span>{isLowConnectionMode ? 'Lite: ON' : 'Lite Mode'}</span>
+          </button>
+
           <button
             type="button"
             onClick={() => openAccountSettings('country_language')}
@@ -2293,6 +2374,8 @@ export default function App() {
             <img
               src={activeCountryObj.flagUrl}
               alt={activeCountryObj.name}
+              loading="lazy"
+              decoding="async"
               referrerPolicy="no-referrer"
               className="h-3.5 w-5 rounded-xs object-cover"
             />
@@ -2699,7 +2782,7 @@ export default function App() {
                         <SmartImage
                           src={activeBanner.imageUrl}
                           alt={activeBanner.headline}
-                          className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+                          className="h-full w-full object-cover"
                         />
                         <div className="absolute top-2.5 left-2.5 rounded-lg bg-[#F85606] px-2.5 py-1 font-mono text-xs font-extrabold text-white shadow-sm">
                           {activeBanner.discountBadge}
@@ -2840,7 +2923,7 @@ export default function App() {
                             <SmartImage
                               src={prod.imageUrl}
                               alt={prod.title}
-                              className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-105"
+                              className="h-full w-full object-cover"
                             />
                             <span
                               className={`absolute top-1.5 left-1.5 rounded px-1.5 py-0.5 text-[10px] font-extrabold text-white uppercase shadow-2xs ${

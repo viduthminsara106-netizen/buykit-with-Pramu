@@ -1,7 +1,8 @@
 import React, { useState, useRef, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { ZoomIn, ZoomOut, Maximize2, X, Images } from 'lucide-react';
+import { Maximize2, X, Images } from 'lucide-react';
 import { MarketplaceProduct, ProductDepartment } from '../data/catalog';
+import { resolveAssetUrl } from '../utils/assetResolver';
 
 export interface ProductGallerySlide {
   id: string;
@@ -13,97 +14,98 @@ export interface ProductGallerySlide {
 
 const COMPLEMENTARY_CATEGORY_ASSETS: Record<ProductDepartment, string[]> = {
   'Audio & Headphones': [
-    '/src/assets/images/product_audio_headphones_1794121197272.jpg',
-    '/src/assets/images/product_smartwatch_pro_1794121197679.jpg',
-    '/src/assets/images/product_powerbank_charger_1794123346828.jpg',
-    '/src/assets/images/hero_marketplace_showcase_1794121196938.jpg',
+    resolveAssetUrl('/src/assets/images/product_audio_headphones_1794121197272.jpg'),
+    resolveAssetUrl('/src/assets/images/product_smartwatch_pro_1794121197679.jpg'),
+    resolveAssetUrl('/src/assets/images/product_powerbank_charger_1794123346828.jpg'),
+    resolveAssetUrl('/src/assets/images/hero_marketplace_showcase_1794121196938.jpg'),
   ],
   'Smartwatches & Wearables': [
-    '/src/assets/images/product_smartwatch_pro_1794121197679.jpg',
-    '/src/assets/images/product_audio_headphones_1794121197272.jpg',
-    '/src/assets/images/product_powerbank_charger_1794123346828.jpg',
-    '/src/assets/images/hero_marketplace_showcase_1794121196938.jpg',
+    resolveAssetUrl('/src/assets/images/product_smartwatch_pro_1794121197679.jpg'),
+    resolveAssetUrl('/src/assets/images/product_audio_headphones_1794121197272.jpg'),
+    resolveAssetUrl('/src/assets/images/product_powerbank_charger_1794123346828.jpg'),
+    resolveAssetUrl('/src/assets/images/hero_marketplace_showcase_1794121196938.jpg'),
   ],
   'Cameras & Drones': [
-    '/src/assets/images/product_camera_drone_1794121198906.jpg',
-    '/src/assets/images/product_powerbank_charger_1794123346828.jpg',
-    '/src/assets/images/product_audio_headphones_1794121197272.jpg',
-    '/src/assets/images/hero_marketplace_showcase_1794121196938.jpg',
+    resolveAssetUrl('/src/assets/images/product_camera_drone_1794121198906.jpg'),
+    resolveAssetUrl('/src/assets/images/product_powerbank_charger_1794123346828.jpg'),
+    resolveAssetUrl('/src/assets/images/product_audio_headphones_1794121197272.jpg'),
+    resolveAssetUrl('/src/assets/images/hero_marketplace_showcase_1794121196938.jpg'),
   ],
   'Computer & Office': [
-    '/src/assets/images/product_powerbank_charger_1794123346828.jpg',
-    '/src/assets/images/product_gaming_controller_1794123345268.jpg',
-    '/src/assets/images/product_audio_headphones_1794121197272.jpg',
-    '/src/assets/images/hero_marketplace_showcase_1794121196938.jpg',
+    resolveAssetUrl('/src/assets/images/product_powerbank_charger_1794123346828.jpg'),
+    resolveAssetUrl('/src/assets/images/product_gaming_controller_1794123345268.jpg'),
+    resolveAssetUrl('/src/assets/images/product_audio_headphones_1794121197272.jpg'),
+    resolveAssetUrl('/src/assets/images/hero_marketplace_showcase_1794121196938.jpg'),
   ],
   'Home & Lifestyle': [
-    '/src/assets/images/product_espresso_maker_1794123345741.jpg',
-    '/src/assets/images/product_powerbank_charger_1794123346828.jpg',
-    '/src/assets/images/product_smartwatch_pro_1794121197679.jpg',
-    '/src/assets/images/hero_marketplace_showcase_1794121196938.jpg',
+    resolveAssetUrl('/src/assets/images/product_espresso_maker_1794123345741.jpg'),
+    resolveAssetUrl('/src/assets/images/product_powerbank_charger_1794123346828.jpg'),
+    resolveAssetUrl('/src/assets/images/product_smartwatch_pro_1794121197679.jpg'),
+    resolveAssetUrl('/src/assets/images/hero_marketplace_showcase_1794121196938.jpg'),
   ],
   'Mobile & Gaming Gear': [
-    '/src/assets/images/product_gaming_controller_1794123345268.jpg',
-    '/src/assets/images/product_powerbank_charger_1794123346828.jpg',
-    '/src/assets/images/product_audio_headphones_1794121197272.jpg',
-    '/src/assets/images/hero_marketplace_showcase_1794121196938.jpg',
+    resolveAssetUrl('/src/assets/images/product_gaming_controller_1794123345268.jpg'),
+    resolveAssetUrl('/src/assets/images/product_powerbank_charger_1794123346828.jpg'),
+    resolveAssetUrl('/src/assets/images/product_audio_headphones_1794121197272.jpg'),
+    resolveAssetUrl('/src/assets/images/hero_marketplace_showcase_1794121196938.jpg'),
   ],
 };
 
 export function buildProductGallerySlides(product: MarketplaceProduct): ProductGallerySlide[] {
+  const mainImageUrl = resolveAssetUrl(product.imageUrl);
   const categoryExtras =
     COMPLEMENTARY_CATEGORY_ASSETS[product.category] ||
     COMPLEMENTARY_CATEGORY_ASSETS['Audio & Headphones'];
 
   const companionImg1 =
-    categoryExtras.find((u) => u !== product.imageUrl) ||
-    '/src/assets/images/hero_marketplace_showcase_1794121196938.jpg';
+    categoryExtras.find((u) => u !== mainImageUrl) ||
+    resolveAssetUrl('/src/assets/images/hero_marketplace_showcase_1794121196938.jpg');
   const companionImg2 =
-    categoryExtras.find((u) => u !== product.imageUrl && u !== companionImg1) ||
-    '/src/assets/images/product_powerbank_charger_1794123346828.jpg';
+    categoryExtras.find((u) => u !== mainImageUrl && u !== companionImg1) ||
+    resolveAssetUrl('/src/assets/images/product_powerbank_charger_1794123346828.jpg');
 
   return [
     {
       id: `${product.id}_slide_main`,
-      url: product.imageUrl,
+      url: mainImageUrl,
       label: 'Main Image',
       caption: `${product.title} — Official Main View`,
-      imageTransformClass: 'scale-100 object-center',
+      imageTransformClass: 'object-center',
     },
     {
       id: `${product.id}_slide_macro`,
-      url: product.imageUrl,
-      label: 'Close-Up View',
-      caption: product.specs[0] || 'Precision Hardware Close-Up View',
-      imageTransformClass: 'scale-[1.32] object-center',
+      url: mainImageUrl,
+      label: 'Detail View',
+      caption: product.specs[0] || 'Precision Hardware Detail View',
+      imageTransformClass: 'object-center',
     },
     {
       id: `${product.id}_slide_angle_left`,
-      url: product.imageUrl,
+      url: mainImageUrl,
       label: 'Side Angle',
       caption: product.specs[1] || 'Ergonomic Profile & Controls View',
-      imageTransformClass: 'scale-[1.22] object-left-top brightness-[1.03]',
+      imageTransformClass: 'object-left-top brightness-[1.03]',
     },
     {
       id: `${product.id}_slide_angle_right`,
-      url: product.imageUrl,
+      url: mainImageUrl,
       label: 'Build Detail',
       caption: product.specs[2] || 'Materials & Connector Detail View',
-      imageTransformClass: 'scale-[1.25] object-right-bottom contrast-[1.04]',
+      imageTransformClass: 'object-right-bottom contrast-[1.04]',
     },
     {
       id: `${product.id}_slide_bundle`,
       url: companionImg1,
       label: 'Studio Setup',
       caption: `${product.storeName} — Companion Ecosystem Showcase`,
-      imageTransformClass: 'scale-100 object-center',
+      imageTransformClass: 'object-center',
     },
     {
       id: `${product.id}_slide_box`,
       url: companionImg2,
       label: 'Package / Kit',
       caption: `${product.title} — Accessories & Box Bundle`,
-      imageTransformClass: 'scale-105 object-center',
+      imageTransformClass: 'object-center',
     },
   ];
 }
@@ -122,7 +124,6 @@ export const ProductImageGallery: React.FC<ProductImageGalleryProps> = ({
   const slides = useMemo(() => buildProductGallerySlides(product), [product]);
   const [activeIndex, setActiveIndex] = useState<number>(0);
   const [lightboxSlideIndex, setLightboxSlideIndex] = useState<number | null>(null);
-  const [isZoomedIn, setIsZoomedIn] = useState<boolean>(false);
 
   const mainSlideTrackRef = useRef<HTMLDivElement | null>(null);
   const thumbStripRef = useRef<HTMLDivElement | null>(null);
@@ -164,13 +165,11 @@ export const ProductImageGallery: React.FC<ProductImageGalleryProps> = ({
 
   const openLightboxAt = (index: number) => {
     setActiveIndex(index);
-    setIsZoomedIn(false);
     setLightboxSlideIndex(index);
   };
 
   const closeLightbox = () => {
     setLightboxSlideIndex(null);
-    setIsZoomedIn(false);
   };
 
   const lightboxSlide =
@@ -178,9 +177,8 @@ export const ProductImageGallery: React.FC<ProductImageGalleryProps> = ({
 
   return (
     <div className="w-full space-y-3">
-      {/* 1. FULL-SIZE HORIZONTAL SNAP-SCROLL PRODUCT IMAGE SLIDER (No Side Arrow Bars — Swipe/Scroll Slides Directly) */}
+      {/* 1. FULL-SIZE HORIZONTAL SNAP-SCROLL PRODUCT IMAGE SLIDER */}
       <div className="relative overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xs">
-        {/* Large Horizontal Slide Scroller Track (Original Full Aspect-Square Size) */}
         <div
           ref={mainSlideTrackRef}
           onScroll={handleMainTrackScroll}
@@ -190,14 +188,15 @@ export const ProductImageGallery: React.FC<ProductImageGalleryProps> = ({
             <div
               key={slide.id}
               onClick={() => openLightboxAt(idx)}
-              title="Swipe/scroll horizontally to slide or click image to view large in full screen"
-              className="relative h-full w-full shrink-0 cursor-zoom-in snap-center overflow-hidden bg-[#F4F3EF]"
+              className="relative h-full w-full shrink-0 cursor-pointer snap-center overflow-hidden bg-[#F4F3EF]"
             >
               <img
-                src={slide.url}
+                src={resolveAssetUrl(slide.url)}
                 alt={slide.caption}
+                loading={idx === 0 ? 'eager' : 'lazy'}
+                decoding="async"
                 referrerPolicy="no-referrer"
-                className={`h-full w-full object-cover transition-transform duration-300 ${slide.imageTransformClass}`}
+                className={`h-full w-full object-cover ${slide.imageTransformClass}`}
               />
             </div>
           ))}
@@ -211,7 +210,7 @@ export const ProductImageGallery: React.FC<ProductImageGalleryProps> = ({
             if (onToggleStock) onToggleStock(product.id, e);
           }}
           title="Click to toggle In Stock (Green) / Out of Stock (Red)"
-          className={`absolute top-3 left-3 z-10 inline-flex items-center gap-1.5 rounded-lg px-3 py-1 text-xs font-extrabold tracking-wide text-white uppercase shadow-md transition-transform hover:scale-105 ${
+          className={`absolute top-3 left-3 z-10 inline-flex items-center gap-1.5 rounded-lg px-3 py-1 text-xs font-extrabold tracking-wide text-white uppercase shadow-md transition-colors ${
             isInStock
               ? 'border border-emerald-300/70 bg-emerald-600 hover:bg-emerald-700'
               : 'border border-red-300/70 bg-red-600 hover:bg-red-700'
@@ -222,7 +221,7 @@ export const ProductImageGallery: React.FC<ProductImageGalleryProps> = ({
           </span>
         </button>
 
-        {/* TOP-RIGHT CORNER: Slide Counter + Fullscreen Zoom Trigger */}
+        {/* TOP-RIGHT CORNER: Slide Counter + Fullscreen View Trigger */}
         <div className="absolute top-3 right-3 z-10 flex items-center gap-1.5">
           <span className="rounded-lg bg-slate-950/80 px-2.5 py-1 font-mono text-xs font-bold text-white backdrop-blur-xs">
             {activeIndex + 1} / {slides.length}
@@ -236,7 +235,7 @@ export const ProductImageGallery: React.FC<ProductImageGalleryProps> = ({
             className="inline-flex items-center gap-1 rounded-lg bg-[#F85606] px-2.5 py-1 text-xs font-bold text-white shadow-sm hover:bg-[#d94800]"
           >
             <Maximize2 className="h-3.5 w-3.5" />
-            <span>View Large</span>
+            <span>View Full</span>
           </button>
         </div>
 
@@ -270,7 +269,7 @@ export const ProductImageGallery: React.FC<ProductImageGalleryProps> = ({
         </div>
       </div>
 
-      {/* 2. COMPACT HORIZONTAL SCROLLABLE PRODUCT IMAGE SLIDES STRIP (Main Image Stays Large, Slide Strip is Compact) */}
+      {/* 2. COMPACT HORIZONTAL SCROLLABLE PRODUCT IMAGE SLIDES STRIP */}
       <div className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 shadow-2xs">
         <div className="mb-1 flex items-center justify-between gap-2">
           <div className="flex items-center gap-1">
@@ -284,7 +283,6 @@ export const ProductImageGallery: React.FC<ProductImageGalleryProps> = ({
           </span>
         </div>
 
-        {/* Compact Single-Row Horizontal Scrollable Slide Thumbnails (No Left/Right Arrow Bars) */}
         <div
           ref={thumbStripRef}
           className="flex flex-nowrap items-center gap-1.5 overflow-x-auto scroll-smooth pb-0.5"
@@ -292,18 +290,12 @@ export const ProductImageGallery: React.FC<ProductImageGalleryProps> = ({
           {slides.map((slide, idx) => {
             const isSelected = idx === activeIndex;
             return (
-              <motion.button
+              <button
                 key={slide.id}
-                whileHover={{ y: -1 }}
-                whileTap={{ scale: 0.95 }}
                 type="button"
                 onMouseEnter={() => scrollToSlide(idx)}
-                onClick={() => {
-                  scrollToSlide(idx);
-                  openLightboxAt(idx);
-                }}
-                title={`Click to view "${slide.label}" large in full screen`}
-                className={`group relative flex w-12 shrink-0 snap-start flex-col overflow-hidden rounded-md border bg-slate-50 text-left transition-all ${
+                onClick={() => scrollToSlide(idx)}
+                className={`group relative flex w-12 shrink-0 snap-start flex-col overflow-hidden rounded-md border bg-slate-50 text-left transition-colors ${
                   isSelected
                     ? 'border-[#F85606] ring-1 ring-[#F85606]/35 shadow-2xs'
                     : 'border-slate-200 opacity-80 hover:border-orange-300 hover:opacity-100'
@@ -311,14 +303,13 @@ export const ProductImageGallery: React.FC<ProductImageGalleryProps> = ({
               >
                 <div className="relative h-10 w-full overflow-hidden bg-[#F4F3EF]">
                   <img
-                    src={slide.url}
+                    src={resolveAssetUrl(slide.url)}
                     alt={slide.label}
+                    loading="lazy"
+                    decoding="async"
                     referrerPolicy="no-referrer"
-                    className={`h-full w-full object-cover transition-transform duration-200 ${slide.imageTransformClass}`}
+                    className={`h-full w-full object-cover ${slide.imageTransformClass}`}
                   />
-                  <div className="absolute inset-0 flex items-center justify-center bg-slate-950/0 opacity-0 transition-all group-hover:bg-slate-950/35 group-hover:opacity-100">
-                    <ZoomIn className="h-3 w-3 text-white drop-shadow-xs" />
-                  </div>
                 </div>
                 <span
                   className={`w-full truncate px-0.5 py-0.5 text-center text-[8px] leading-tight font-bold ${
@@ -329,13 +320,13 @@ export const ProductImageGallery: React.FC<ProductImageGalleryProps> = ({
                 >
                   {slide.label}
                 </span>
-              </motion.button>
+              </button>
             );
           })}
         </div>
       </div>
 
-      {/* 3. FULL-SCREEN SINGLE-IMAGE LIGHTBOX MODAL (No Side Arrow Bars — Pure Large Image View + Bottom Slide Strip) */}
+      {/* 3. FULL-SCREEN SINGLE-IMAGE LIGHTBOX MODAL */}
       <AnimatePresence>
         {lightboxSlide && lightboxSlideIndex !== null && (
           <motion.div
@@ -365,24 +356,6 @@ export const ProductImageGallery: React.FC<ProductImageGalleryProps> = ({
               <div className="flex shrink-0 items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => setIsZoomedIn((z) => !z)}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-white/20 bg-white/10 px-3 py-1.5 text-xs font-bold text-white transition-colors hover:bg-white/20"
-                >
-                  {isZoomedIn ? (
-                    <>
-                      <ZoomOut className="h-4 w-4" />
-                      <span>Reset Zoom (1x)</span>
-                    </>
-                  ) : (
-                    <>
-                      <ZoomIn className="h-4 w-4" />
-                      <span>Zoom In (1.65x)</span>
-                    </>
-                  )}
-                </button>
-
-                <button
-                  type="button"
                   onClick={closeLightbox}
                   className="inline-flex items-center gap-1 rounded-lg bg-[#F85606] px-3.5 py-1.5 text-xs font-extrabold text-white transition-colors hover:bg-[#d94800]"
                 >
@@ -392,22 +365,18 @@ export const ProductImageGallery: React.FC<ProductImageGalleryProps> = ({
               </div>
             </div>
 
-            {/* Center Full-Screen Isolated Image Showcase (No Side Arrow Bars) */}
+            {/* Center Full-Screen Isolated Image Showcase */}
             <div
               onClick={(e) => e.stopPropagation()}
               className="relative my-auto flex max-h-[74vh] w-full max-w-4xl items-center justify-center overflow-hidden rounded-2xl border border-white/15 bg-slate-900 shadow-2xl"
             >
-              <div
-                onClick={() => setIsZoomedIn((z) => !z)}
-                className="flex h-[68vh] w-full cursor-zoom-in items-center justify-center overflow-hidden bg-black"
-              >
+              <div className="flex h-[68vh] w-full items-center justify-center overflow-hidden bg-black">
                 <img
-                  src={lightboxSlide.url}
+                  src={resolveAssetUrl(lightboxSlide.url)}
                   alt={lightboxSlide.caption}
+                  decoding="async"
                   referrerPolicy="no-referrer"
-                  className={`max-h-full max-w-full object-contain transition-transform duration-300 ${
-                    lightboxSlide.imageTransformClass
-                  } ${isZoomedIn ? '!scale-[1.65] cursor-zoom-out' : ''}`}
+                  className={`max-h-full max-w-full object-contain ${lightboxSlide.imageTransformClass}`}
                 />
               </div>
             </div>
@@ -422,19 +391,20 @@ export const ProductImageGallery: React.FC<ProductImageGalleryProps> = ({
                   key={`lb-thumb-${s.id}`}
                   type="button"
                   onClick={() => {
-                    setIsZoomedIn(false);
                     setLightboxSlideIndex(idx);
                     scrollToSlide(idx);
                   }}
-                  className={`relative h-14 w-14 shrink-0 overflow-hidden rounded-lg border-2 transition-all ${
+                  className={`relative h-14 w-14 shrink-0 overflow-hidden rounded-lg border-2 transition-colors ${
                     idx === lightboxSlideIndex
-                      ? 'border-[#F85606] scale-105 shadow-md'
+                      ? 'border-[#F85606] shadow-md'
                       : 'border-white/20 opacity-65 hover:opacity-100'
                   }`}
                 >
                   <img
-                    src={s.url}
+                    src={resolveAssetUrl(s.url)}
                     alt={s.label}
+                    loading="lazy"
+                    decoding="async"
                     className={`h-full w-full object-cover ${s.imageTransformClass}`}
                   />
                 </button>

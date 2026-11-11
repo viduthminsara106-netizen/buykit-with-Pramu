@@ -7,11 +7,19 @@
     --font-mono: 'JetBrains Mono', monospace;
   }
 
-  body {
+  html, body {
     font-family: var(--font-sans);
     background-color: #FAF9F6;
     color: #0F172A;
     -webkit-font-smoothing: antialiased;
+    touch-action: pan-x pan-y;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+    overscroll-behavior-x: none;
+  }
+
+  *, *::before, *::after {
+    touch-action: pan-x pan-y;
   }
 
   h1, h2, h3, .font-display {

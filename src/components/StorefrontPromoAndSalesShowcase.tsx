@@ -15,6 +15,7 @@ import {
   PromotionalPosterCampaign,
   CreativeSaleSpotlight,
 } from '../utils/multiAgentStorefront';
+import { OptimizedImage, resolveAssetUrl } from '../utils/assetResolver';
 
 interface StorefrontPromoAndSalesShowcaseProps {
   promoPosters: PromotionalPosterCampaign[];
@@ -97,11 +98,10 @@ export const StorefrontPromoAndSalesShowcase: React.FC<
                 >
                   {/* 16:9 Promotional Poster Artwork with Measured Contrast Scrim */}
                   <div className="relative aspect-16/9 w-full overflow-hidden bg-slate-900">
-                    <img
-                      src={poster.imageUrl}
+                    <OptimizedImage
+                      src={resolveAssetUrl(poster.imageUrl)}
                       alt={poster.headline}
-                      referrerPolicy="no-referrer"
-                      className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+                      className="h-full w-full object-cover"
                     />
                     <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/45 to-transparent" />
 
@@ -110,13 +110,9 @@ export const StorefrontPromoAndSalesShowcase: React.FC<
                       <span className="truncate rounded-md bg-slate-950/80 px-2.5 py-1 text-[10px] font-extrabold tracking-wider text-amber-300 uppercase backdrop-blur-xs">
                         {poster.campaignTag}
                       </span>
-                      <motion.span
-                        animate={{ scale: [1, 1.04, 1] }}
-                        transition={{ duration: 2.2, repeat: Infinity, ease: 'easeInOut' }}
-                        className="shrink-0 rounded-md bg-[#F85606] px-2.5 py-1 font-mono text-[11px] font-extrabold text-white shadow-xs"
-                      >
+                      <span className="shrink-0 rounded-md bg-[#F85606] px-2.5 py-1 font-mono text-[11px] font-extrabold text-white shadow-xs">
                         {poster.discountBadge}
-                      </motion.span>
+                      </span>
                     </div>
 
                     {/* Poster Headline Overlay */}
@@ -229,11 +225,10 @@ export const StorefrontPromoAndSalesShowcase: React.FC<
 
                       {/* Product Image & Discount Overlay */}
                       <div className="relative aspect-16/10 w-full overflow-hidden rounded-lg bg-slate-100">
-                        <img
-                          src={sale.productImageUrl || product.imageUrl}
+                        <OptimizedImage
+                          src={resolveAssetUrl(sale.productImageUrl || product.imageUrl)}
                           alt={sale.productTitle}
-                          referrerPolicy="no-referrer"
-                          className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-105"
+                          className="h-full w-full object-cover"
                         />
                         <span className="absolute bottom-1.5 left-1.5 rounded bg-slate-950/85 px-2 py-0.5 font-mono text-[10px] font-extrabold text-amber-300">
                           -{sale.discountPercent}% OFF

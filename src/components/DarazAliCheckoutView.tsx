@@ -25,6 +25,7 @@ import {
   X,
 } from 'lucide-react';
 import { DealTier, formatLKR } from '../data/catalog';
+import { resolveAssetUrl } from '../utils/assetResolver';
 import {
   COUNTRIES_WITH_FLAGS,
   SavedPaymentCard,
@@ -681,8 +682,10 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
                       <div className="flex items-start gap-3.5">
                         <div className="relative h-20 w-20 shrink-0 overflow-hidden rounded-xl border border-slate-200 bg-white">
                           <img
-                            src={item.imageUrl}
+                            src={resolveAssetUrl(item.imageUrl)}
                             alt={item.title}
+                            loading="lazy"
+                            decoding="async"
                             referrerPolicy="no-referrer"
                             className="h-full w-full object-cover"
                           />
@@ -1587,8 +1590,10 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
                       >
                         <div className="flex min-w-0 items-center gap-2.5">
                           <img
-                            src={item.imageUrl}
+                            src={resolveAssetUrl(item.imageUrl)}
                             alt={item.title}
+                            loading="lazy"
+                            decoding="async"
                             referrerPolicy="no-referrer"
                             className="h-11 w-11 shrink-0 rounded-lg border border-slate-200 object-cover"
                           />

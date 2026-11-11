@@ -33,6 +33,7 @@ import {
 } from 'lucide-react';
 import { User } from '../firebase';
 import { MarketplaceProduct, DealTier, formatLKR } from '../data/catalog';
+import { resolveAssetUrl } from '../utils/assetResolver';
 import {
   TrackableOrder,
   ORDER_TRACKING_STAGES,
@@ -1146,8 +1147,10 @@ export const DarazAliAccountTab: React.FC<DarazAliAccountTabProps> = ({
                       className="relative h-20 w-20 shrink-0 cursor-pointer overflow-hidden rounded-lg border border-slate-200 bg-white"
                     >
                       <img
-                        src={wishItem.imageUrl}
+                        src={resolveAssetUrl(wishItem.imageUrl)}
                         alt={wishItem.title}
+                        loading="lazy"
+                        decoding="async"
                         referrerPolicy="no-referrer"
                         className="h-full w-full object-cover"
                       />
@@ -1282,8 +1285,10 @@ export const DarazAliAccountTab: React.FC<DarazAliAccountTabProps> = ({
                       className="relative h-20 w-20 shrink-0 cursor-pointer overflow-hidden rounded-lg border border-slate-200 bg-white"
                     >
                       <img
-                        src={prod.imageUrl}
+                        src={resolveAssetUrl(prod.imageUrl)}
                         alt={prod.title}
+                        loading="lazy"
+                        decoding="async"
                         referrerPolicy="no-referrer"
                         className="h-full w-full object-cover"
                       />
@@ -1390,10 +1395,12 @@ export const DarazAliAccountTab: React.FC<DarazAliAccountTabProps> = ({
                 {/* 1. Main Image + Top-Left Stock Status + Discount % Badge */}
                 <div className="relative aspect-square w-full overflow-hidden bg-slate-100">
                   <img
-                    src={prod.imageUrl}
+                    src={resolveAssetUrl(prod.imageUrl)}
                     alt={prod.title}
+                    loading="lazy"
+                    decoding="async"
                     referrerPolicy="no-referrer"
-                    className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+                    className="h-full w-full object-cover"
                   />
                   <div className="absolute top-2 left-2">
                     {renderStockBadge(prod)}

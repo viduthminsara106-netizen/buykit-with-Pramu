@@ -25,6 +25,7 @@ import {
   runSalesAgent,
   runDescriptionAgent,
 } from '../utils/multiAgentStorefront';
+import { resolveAssetUrl } from '../utils/assetResolver';
 
 interface AdminStorefrontStudioModalProps {
   isOpen: boolean;
@@ -56,12 +57,12 @@ const DEPARTMENTS: ProductDepartment[] = [
 ];
 
 const DEFAULT_CATEGORY_IMAGES: Record<ProductDepartment, string> = {
-  'Audio & Headphones': '/src/assets/images/product_audio_headphones_1794121197272.jpg',
-  'Smartwatches & Wearables': '/src/assets/images/product_smartwatch_pro_1794121197679.jpg',
-  'Cameras & Drones': '/src/assets/images/product_camera_drone_1794121198906.jpg',
-  'Computer & Office': '/src/assets/images/product_powerbank_charger_1794123346828.jpg',
-  'Home & Lifestyle': '/src/assets/images/product_espresso_maker_1794123345741.jpg',
-  'Mobile & Gaming Gear': '/src/assets/images/product_gaming_controller_1794123345268.jpg',
+  'Audio & Headphones': resolveAssetUrl('/src/assets/images/product_audio_headphones_1794121197272.jpg'),
+  'Smartwatches & Wearables': resolveAssetUrl('/src/assets/images/product_smartwatch_pro_1794121197679.jpg'),
+  'Cameras & Drones': resolveAssetUrl('/src/assets/images/product_camera_drone_1794121198906.jpg'),
+  'Computer & Office': resolveAssetUrl('/src/assets/images/product_powerbank_charger_1794123346828.jpg'),
+  'Home & Lifestyle': resolveAssetUrl('/src/assets/images/product_espresso_maker_1794123345741.jpg'),
+  'Mobile & Gaming Gear': resolveAssetUrl('/src/assets/images/product_gaming_controller_1794123345268.jpg'),
 };
 
 export const AdminStorefrontStudioModal: React.FC<

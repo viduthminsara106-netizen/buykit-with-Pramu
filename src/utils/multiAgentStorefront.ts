@@ -1,4 +1,5 @@
 import { DealTier, ProductDepartment } from '../data/catalog';
+import { resolveAssetUrl } from './assetResolver';
 
 export interface PromotionalPosterCampaign {
   id: string;
@@ -56,7 +57,7 @@ export const INITIAL_PROMO_POSTERS: PromotionalPosterCampaign[] = [
     dealPrice: 14500,
     originalPrice: 52500,
     accentTheme: 'orange_gold',
-    imageUrl: '/src/assets/images/promo_poster_mega_sale_1794319674629.jpg',
+    imageUrl: resolveAssetUrl('/src/assets/images/promo_poster_mega_sale_1794319674629.jpg'),
     createdAt: '2026-11-10',
   },
   {
@@ -70,7 +71,7 @@ export const INITIAL_PROMO_POSTERS: PromotionalPosterCampaign[] = [
     dealPrice: 10900,
     originalPrice: 35500,
     accentTheme: 'obsidian_flame',
-    imageUrl: '/src/assets/images/promo_poster_flash_festival_1794319675114.jpg',
+    imageUrl: resolveAssetUrl('/src/assets/images/promo_poster_flash_festival_1794319675114.jpg'),
     createdAt: '2026-11-10',
   },
   {
@@ -84,7 +85,7 @@ export const INITIAL_PROMO_POSTERS: PromotionalPosterCampaign[] = [
     dealPrice: 42900,
     originalPrice: 88000,
     accentTheme: 'emerald_luxe',
-    imageUrl: '/src/assets/images/promo_poster_home_lifestyle_1794319676096.jpg',
+    imageUrl: resolveAssetUrl('/src/assets/images/promo_poster_home_lifestyle_1794319676096.jpg'),
     createdAt: '2026-11-10',
   },
 ];
@@ -94,7 +95,7 @@ export const INITIAL_CREATIVE_SALES: CreativeSaleSpotlight[] = [
     id: 'sale_spot_anc',
     productId: 'prod_sonicflow_anc_pro',
     productTitle: 'SonicFlow Titanium Studio ANC Wireless Over-Ear Headphones',
-    productImageUrl: '/src/assets/images/product_audio_headphones_1794121197272.jpg',
+    productImageUrl: resolveAssetUrl('/src/assets/images/product_audio_headphones_1794121197272.jpg'),
     category: 'Audio & Headphones',
     saleBannerTitle: 'SuperDeal Audio Spotlight · 62% OFF',
     dealLabel: 'Flash Sale · 62% Off',
@@ -112,7 +113,7 @@ export const INITIAL_CREATIVE_SALES: CreativeSaleSpotlight[] = [
     id: 'sale_spot_watch',
     productId: 'prod_atlas_titanium_watch',
     productTitle: 'Atlas Ultra Sapphire Titanium GPS Smartwatch (49mm)',
-    productImageUrl: '/src/assets/images/product_smartwatch_pro_1794121197679.jpg',
+    productImageUrl: resolveAssetUrl('/src/assets/images/product_smartwatch_pro_1794121197679.jpg'),
     category: 'Smartwatches & Wearables',
     saleBannerTitle: 'Flagship Wearable Drop · 55% OFF',
     dealLabel: 'Flash Sale · 55% Off',
@@ -130,7 +131,7 @@ export const INITIAL_CREATIVE_SALES: CreativeSaleSpotlight[] = [
     id: 'sale_spot_drone',
     productId: 'prod_cinemax_fold_4k',
     productTitle: 'CineMax Fold 4K HDR 3-Axis Gimbal Camera Drone Combo',
-    productImageUrl: '/src/assets/images/product_camera_drone_1794121198906.jpg',
+    productImageUrl: resolveAssetUrl('/src/assets/images/product_camera_drone_1794121198906.jpg'),
     category: 'Cameras & Drones',
     saleBannerTitle: 'Aerial Creator Bundle · Save Rs. 49,000',
     dealLabel: 'Choice · 42% Off',
@@ -148,7 +149,7 @@ export const INITIAL_CREATIVE_SALES: CreativeSaleSpotlight[] = [
     id: 'sale_spot_espresso',
     productId: 'prod_barista_pro_espresso',
     productTitle: 'Marzocco Studio 20-Bar Stainless Steel Espresso Maker',
-    productImageUrl: '/src/assets/images/product_espresso_maker_1794123345741.jpg',
+    productImageUrl: resolveAssetUrl('/src/assets/images/product_espresso_maker_1794123345741.jpg'),
     category: 'Home & Lifestyle',
     saleBannerTitle: 'Home Café Super Sale · 51% OFF',
     dealLabel: 'Flash Sale · 51% Off',

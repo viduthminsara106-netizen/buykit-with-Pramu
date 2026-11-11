@@ -1,3 +1,5 @@
+import { resolveAssetUrl } from '../utils/assetResolver';
+
 export type DealTier = 'new_user' | 'flash_sale' | 'choice_bundle' | 'standard';
 
 export type ProductDepartment =
@@ -30,13 +32,15 @@ export interface MarketplaceProduct {
   description: string;
 }
 
-export const HERO_BANNER_IMAGE = '/src/assets/images/hero_marketplace_showcase_1794121196938.jpg';
+export const HERO_BANNER_IMAGE = resolveAssetUrl(
+  '/src/assets/images/hero_marketplace_showcase_1794121196938.jpg'
+);
 
 export function formatLKR(amount: number): string {
   return `Rs. ${Math.round(amount).toLocaleString('en-LK')}`;
 }
 
-export const MARKETPLACE_PRODUCTS: MarketplaceProduct[] = [
+const RAW_MARKETPLACE_PRODUCTS: MarketplaceProduct[] = [
   {
     id: 'prod_sonicflow_anc_pro',
     title: 'SonicFlow Titanium Studio ANC Wireless Over-Ear Headphones',
@@ -974,3 +978,9 @@ export const MARKETPLACE_PRODUCTS: MarketplaceProduct[] = [
       'Look sharp on Zoom, Google Meet, and live streams even in dim room lighting.',
   },
 ];
+
+export const MARKETPLACE_PRODUCTS: MarketplaceProduct[] = RAW_MARKETPLACE_PRODUCTS.map((p) => ({
+  ...p,
+  imageUrl: resolveAssetUrl(p.imageUrl),
+}));
+
