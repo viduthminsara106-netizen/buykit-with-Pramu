@@ -132,6 +132,7 @@ import {
   resolveAssetUrl,
   detectSlowConnection,
 } from './utils/assetResolver';
+import { PWAInstallButton, OfflineIndicator } from './components/PWAInstallButton';
 
 export const BUYKIT_LOGO_ASSET = resolveAssetUrl(
   '/assets/aistudio/Screenshot_20261107_191852_81defece.jpg'
@@ -520,33 +521,7 @@ export default function App() {
   const [selectedHubName, setSelectedHubName] = useState('BuyKit Colombo Central Hub');
   const [checkoutSubmitting, setCheckoutSubmitting] = useState(false);
   const [toastBanner, setToastBanner] = useState<string | null>(null);
-  const [isLowConnectionMode, setIsLowConnectionMode] = useState<boolean>(() => {
-    try {
-      const saved = localStorage.getItem('buykit_low_data_mode');
-      if (saved === 'true') return true;
-      if (saved === 'false') return false;
-    } catch {
-      // ignore
-    }
-    return detectSlowConnection();
-  });
-
-  const handleToggleLowConnectionMode = () => {
-    setIsLowConnectionMode((prev) => {
-      const next = !prev;
-      try {
-        localStorage.setItem('buykit_low_data_mode', String(next));
-      } catch {
-        // ignore
-      }
-      showToast(
-        next
-          ? 'Lite / Low-Data Mode Enabled — Optimized for slow connections!'
-          : 'Standard High-Speed Mode Enabled.'
-      );
-      return next;
-    });
-  };
+  const [isLowConnectionMode] = useState<boolean>(() => detectSlowConnection());
 
   const openAccountSettings = (tab: SettingsTabKey = 'profile') => {
     setSettingsModalTab(tab);
@@ -2263,6 +2238,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#F5F5F7] pb-24 text-slate-900">
+      <OfflineIndicator />
       {/* Dismissible Notification Toast */}
       <AnimatePresence>
         {toastBanner && (
@@ -2284,7 +2260,7 @@ export default function App() {
       </AnimatePresence>
 
       {/* Top Navigation Bar with Official BuyKit Logo */}
-      <header className="sticky top-0 z-40 flex items-center justify-between gap-6 border-b border-slate-200 bg-white px-4 py-2.5 shadow-2xs sm:px-6 lg:px-10">
+      <header className="sticky top-0 z-40 flex items-center justify-between gap-2 border-b border-slate-200 bg-white px-3 py-2.5 shadow-2xs sm:gap-5 sm:px-6 lg:px-10">
         {/* Zone 1: Official BuyKit Logo + Wordmark */}
         <a
           href="#top"
@@ -2293,13 +2269,13 @@ export default function App() {
             setActiveBottomTab('home');
             window.scrollTo({ top: 0, behavior: 'smooth' });
           }}
-          className="flex items-center gap-2.5 whitespace-nowrap shrink-0"
+          className="flex min-w-0 items-center gap-2 whitespace-nowrap shrink-0 sm:gap-2.5"
         >
           <BuyKitLogoBadge size="md" />
           <div className="flex flex-col">
-            <span className="font-display text-xl font-extrabold tracking-tight text-slate-950 sm:text-2xl">
+            <span className="font-display text-lg font-extrabold tracking-tight text-slate-950 sm:text-2xl">
               buy<span className="text-[#F85606]">kit</span>{' '}
-              <span className="text-sm font-semibold text-slate-500">with Pramu</span>
+              <span className="text-xs font-semibold text-slate-500 sm:text-sm">with Pramu</span>
             </span>
           </div>
         </a>
@@ -2349,22 +2325,8 @@ export default function App() {
           </button>
         </nav>
 
-        {/* Zone 3: Top-Right Low-Data Mode Toggle, Country Flag + Language, Settings & Cart / Login CTA */}
-        <div className="flex items-center gap-2 sm:gap-2.5 shrink-0">
-          <button
-            type="button"
-            onClick={handleToggleLowConnectionMode}
-            title="Toggle Lite / Low-Connection Data Saver Mode"
-            className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-[11px] font-extrabold transition-colors whitespace-nowrap shrink-0 ${
-              isLowConnectionMode
-                ? 'border-emerald-300 bg-emerald-50 text-emerald-800'
-                : 'border-slate-200 bg-slate-50 text-slate-600 hover:border-[#F85606] hover:text-[#F85606]'
-            }`}
-          >
-            <Zap className={`h-3.5 w-3.5 ${isLowConnectionMode ? 'text-emerald-600' : 'text-[#F85606]'}`} />
-            <span>{isLowConnectionMode ? 'Lite: ON' : 'Lite Mode'}</span>
-          </button>
-
+        {/* Zone 3: Top-Right Country Flag + Language, Settings & Checkout / Login CTA */}
+        <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
           <button
             type="button"
             onClick={() => openAccountSettings('country_language')}
@@ -2396,10 +2358,13 @@ export default function App() {
 
           <button
             type="button"
-            onClick={() => setActiveBottomTab('cart')}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-[#FFB800] px-3 py-2 text-xs font-extrabold text-slate-950 transition-colors hover:bg-[#e5a600] whitespace-nowrap shrink-0"
+            onClick={() => {
+              setActiveBottomTab('cart');
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-[#FFB800] px-3 py-2 text-xs font-extrabold text-slate-950 shadow-2xs transition-colors hover:bg-[#e5a600] whitespace-nowrap shrink-0"
           >
-            <ShoppingBag className="h-4 w-4" />
+            <ShoppingBag className="h-4 w-4 shrink-0" />
             <span>{t.checkout} ({totalCartUnits})</span>
           </button>
 
@@ -2431,6 +2396,9 @@ export default function App() {
 
       {/* Main Wide Daraz / AliExpress Storefront Container */}
       <main id="top" className="mx-auto max-w-[1540px] px-3 py-5 sm:px-6 lg:px-8">
+        {/* Animated Bottom Notification Popup in English for App Download */}
+        <PWAInstallButton variant="floating" searchQuery={searchQuery} />
+
         {/* Global Search Bar + Tools + Filters (Hidden on Account & Cart/Checkout Tabs) */}
         {activeBottomTab !== 'account' && activeBottomTab !== 'cart' && (
           <div className="mb-4 rounded-xl border border-slate-200 bg-white p-3.5 shadow-2xs">
@@ -2473,6 +2441,8 @@ export default function App() {
             </div>
 
             <div className="flex flex-wrap items-center gap-2 text-xs">
+              <PWAInstallButton variant="header" />
+
               <button
                 type="button"
                 onClick={() => setIsPickupMapOpen(true)}

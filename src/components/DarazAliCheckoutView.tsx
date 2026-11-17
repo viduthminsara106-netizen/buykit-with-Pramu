@@ -1224,42 +1224,31 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
 
       {/* =========================================================
           STICKY BOTTOM CHECKOUT BAR (Always visible while scrolling Checkout page,
-          showing Final Total Price, Active Coupon/Delivery Status & Checkout Button)
+          showing Final Total Price & Checkout / Pay Now Button)
          ========================================================= */}
       {items.length > 0 && (
-        <div className="fixed right-0 bottom-[56px] left-0 z-40 border-t-2 border-orange-200 bg-white/95 px-4 py-2.5 shadow-[0_-8px_22px_rgba(15,23,42,0.12)] backdrop-blur-md sm:px-8 sm:py-3">
-          <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3">
-            {/* Left: Total Price + Coupon & Delivery Fee Status */}
-            <div className="flex items-center gap-3 sm:gap-4">
+        <div className="fixed right-0 bottom-[62px] left-0 z-[45] border-t-2 border-orange-300 bg-white/98 px-3 py-2.5 shadow-[0_-8px_24px_rgba(15,23,42,0.16)] backdrop-blur-md sm:px-8 sm:py-3">
+          <div className="mx-auto flex max-w-6xl items-center justify-between gap-2.5">
+            {/* Left: Total Price + Coupon Status */}
+            <div className="min-w-0 flex-1">
               <div className="font-mono leading-tight tabular-nums">
                 <div className="flex flex-wrap items-center gap-1.5">
-                  <span className="font-sans text-[10px] font-extrabold tracking-wider text-slate-500 uppercase sm:text-[11px]">
-                    {t.totalPayable} ({totalUnits} {totalUnits === 1 ? 'item' : 'items'})
+                  <span className="font-sans text-[10px] font-extrabold tracking-wider text-slate-600 uppercase sm:text-[11px]">
+                    {t.totalPayable} ({totalUnits})
                   </span>
                   {couponDiscountAmount > 0 && (
                     <span className="rounded bg-emerald-600 px-1.5 py-0.5 font-mono text-[10px] font-extrabold text-white">
-                      {activeCoupon.code} -{formatLKR(couponDiscountAmount)}
+                      -{formatLKR(couponDiscountAmount)}
                     </span>
                   )}
-                  <span
-                    className={`rounded px-1.5 py-0.5 font-sans text-[10px] font-extrabold ${
-                      deliveryFeeAmount === 0
-                        ? 'bg-emerald-50 text-emerald-700'
-                        : 'bg-orange-50 text-[#F85606]'
-                    }`}
-                  >
-                    {deliveryFeeAmount === 0
-                      ? t.freeDelivery
-                      : `${t.paidDelivery}: +${formatLKR(deliveryFeeAmount)}`}
-                  </span>
                 </div>
 
-                <div className="mt-0.5 flex flex-wrap items-baseline gap-2">
-                  <span className="text-lg font-extrabold text-[#F85606] sm:text-xl">
+                <div className="mt-0.5 flex items-baseline gap-2">
+                  <span className="text-base font-extrabold text-[#F85606] sm:text-xl">
                     {formatLKR(finalPayableAmount)}
                   </span>
                   {itemsOriginalTotal > finalPayableAmount && (
-                    <span className="text-xs text-slate-400 line-through">
+                    <span className="hidden text-xs text-slate-400 line-through sm:inline">
                       {formatLKR(itemsOriginalTotal)}
                     </span>
                   )}
@@ -1272,7 +1261,7 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
               </div>
             </div>
 
-            {/* Right: Selected Payment Badge + Sticky Checkout / Place Order Button */}
+            {/* Right: Selected Payment Badge + Sticky Checkout / Pay Now Button */}
             <div className="flex shrink-0 items-center gap-2 sm:gap-3">
               <div className="hidden text-right text-[11px] leading-tight md:block">
                 <span className="block font-semibold text-slate-400">{t.selectPaymentMethod}</span>
@@ -1283,9 +1272,9 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
                 type="button"
                 disabled={checkoutSubmitting || creatingIntent}
                 onClick={handleTriggerCheckoutOrder}
-                className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-[#F85606] px-4 py-2.5 text-xs font-extrabold text-white shadow-md transition-all hover:bg-[#d94800] disabled:opacity-50 sm:px-6 sm:py-2.5 sm:text-sm"
+                className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-xl bg-[#F85606] px-4 py-2.5 text-xs font-extrabold text-white shadow-md transition-all hover:bg-[#d94800] disabled:opacity-50 sm:px-6 sm:py-3 sm:text-sm whitespace-nowrap"
               >
-                <Bolt className="h-4 w-4" />
+                <Bolt className="h-4 w-4 shrink-0" />
                 <span>
                   {creatingIntent
                     ? 'Processing...'
