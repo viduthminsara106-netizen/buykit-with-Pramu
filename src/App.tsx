@@ -47,6 +47,8 @@ import {
   HelpCircle,
   Scale,
   Settings,
+  Edit3,
+  Check,
 } from 'lucide-react';
 import {
   auth,
@@ -67,6 +69,15 @@ import {
   OperationType,
   sanitizeId,
   VALIDATION_LIMITS,
+  ROOT_ADMIN_EMAIL,
+  isRootAdminEmail,
+  emailToAdminKey,
+  AdminEmailRecord,
+  AdminNotificationRecord,
+  AdminNotificationType,
+  AdminOrderRecord,
+  emitAdminNotificationToFirestore,
+  ensureUserProfileDocument,
   User,
 } from './firebase';
 import {
@@ -78,7 +89,6 @@ import {
   formatLKR,
 } from './data/catalog';
 import { AuthGateModal } from './components/AuthGateModal';
-import { PickupMapModal } from './components/PickupMapModal';
 import {
   ProductReviewsAndQaSection,
   FirestoreProductReview,
@@ -113,7 +123,9 @@ import {
 import {
   DarazAliCheckoutView,
   AVAILABLE_CHECKOUT_COUPONS,
+  CouponOption,
 } from './components/DarazAliCheckoutView';
+import { DarazAliCartView } from './components/DarazAliCartView';
 import { getTranslations } from './utils/i18n';
 import {
   INITIAL_PROMO_POSTERS,
@@ -126,21 +138,110 @@ import {
   runDescriptionAgent,
 } from './utils/multiAgentStorefront';
 import { StorefrontPromoAndSalesShowcase } from './components/StorefrontPromoAndSalesShowcase';
-import { AdminStorefrontStudioModal } from './components/AdminStorefrontStudioModal';
+import {
+  AdminDashboardModal,
+  AdminDashboardTabKey,
+} from './components/AdminDashboardModal';
+import {
+  WelcomePopupPosterModal,
+  WelcomePopupPosterConfig,
+  DEFAULT_WELCOME_POPUP_CONFIG,
+} from './components/WelcomePopupPosterModal';
 import {
   OptimizedImage,
   resolveAssetUrl,
   detectSlowConnection,
 } from './utils/assetResolver';
 import { PWAInstallButton, OfflineIndicator } from './components/PWAInstallButton';
+import { MobileQrScanPayPage } from './components/MobileQrScanPayPage';
 
 export const BUYKIT_LOGO_ASSET = resolveAssetUrl(
   '/assets/aistudio/Screenshot_20261107_191852_81defece.jpg'
 );
 
-type BottomTab = 'home' | 'shop' | 'buykit' | 'cart' | 'account';
+type BottomTab = 'home' | 'shop' | 'buykit' | 'cart' | 'checkout' | 'account' | 'search';
 type SortOption = 'popular' | 'price_asc' | 'price_desc' | 'rating' | 'discount';
 type PricePreset = 'all' | 'under_10k' | '10k_to_25k' | '25k_to_50k' | 'above_50k' | 'custom';
+
+const SEARCH_SYNONYM_GROUPS: string[][] = [
+  ['headphone', 'headphones', 'earbud', 'earbuds', 'earphone', 'earphones', 'audio', 'anc', 'sound', 'speaker', 'mic'],
+  ['watch', 'watches', 'smartwatch', 'smartwatches', 'band', 'wearable', 'wearables', 'fitness', 'gps', 'amoled'],
+  ['camera', 'cameras', 'drone', 'drones', 'gimbal', '4k', 'photo', 'video', 'action'],
+  ['charger', 'chargers', 'powerbank', 'power', 'bank', 'gan', 'cable', 'hub', 'dock', 'adapter', 'battery'],
+  ['laptop', 'computer', 'office', 'desk', 'monitor', 'ssd', 'usb', 'type-c', 'usbc'],
+  ['coffee', 'espresso', 'barista', 'kettle', 'home', 'kitchen', 'lifestyle', 'lamp', 'air', 'purifier'],
+  ['game', 'gaming', 'controller', 'gamepad', 'keyboard', 'mouse', 'mech', 'mechanical', 'rgb', 'mobile', 'phone'],
+];
+
+function expandSearchToken(token: string): string[] {
+  const clean = token.toLowerCase().trim();
+  if (!clean) return [];
+  const expanded = new Set<string>([clean]);
+  if (clean.endsWith('s') && clean.length > 3) {
+    expanded.add(clean.slice(0, -1));
+  }
+  for (const group of SEARCH_SYNONYM_GROUPS) {
+    if (group.some((word) => word === clean || (clean.length >= 3 && word.includes(clean)))) {
+      group.forEach((word) => expanded.add(word));
+    }
+  }
+  return Array.from(expanded);
+}
+
+function computeProductSearchScore(item: MarketplaceProduct, rawQuery: string): number {
+  const q = rawQuery.trim().toLowerCase();
+  if (!q) return 1;
+
+  const titleLower = item.title.toLowerCase();
+  const taglineLower = item.tagline.toLowerCase();
+  const categoryLower = item.category.toLowerCase();
+  const storeLower = item.storeName.toLowerCase();
+  const dealLower = item.dealLabel.toLowerCase();
+  const descLower = item.description.toLowerCase();
+  const specsLower = item.specs.join(' ').toLowerCase();
+  const offerLower = (item.specialOfferText || '').toLowerCase();
+  const couponsLower = (item.productCoupons || [])
+    .map((c) => `${c.code} ${c.badgeText} ${c.subtitle}`)
+    .join(' ')
+    .toLowerCase();
+
+  const fullBlob = `${titleLower} ${taglineLower} ${categoryLower} ${storeLower} ${dealLower} ${descLower} ${specsLower} ${offerLower} ${couponsLower}`;
+
+  // Direct full-phrase boost
+  let score = 0;
+  if (titleLower === q) score += 200;
+  else if (titleLower.startsWith(q)) score += 130;
+  else if (titleLower.includes(q)) score += 90;
+  else if (categoryLower.includes(q)) score += 55;
+  else if (fullBlob.includes(q)) score += 40;
+
+  // Multi-word tokenized matching (every word must match either directly or via synonym)
+  const tokens = q.split(/\s+/).filter(Boolean);
+  if (tokens.length > 0) {
+    let matchedTokenCount = 0;
+    for (const token of tokens) {
+      const variants = expandSearchToken(token);
+      if (titleLower.includes(token)) {
+        matchedTokenCount += 1;
+        score += 45;
+      } else if (categoryLower.includes(token) || taglineLower.includes(token)) {
+        matchedTokenCount += 1;
+        score += 28;
+      } else if (fullBlob.includes(token)) {
+        matchedTokenCount += 1;
+        score += 18;
+      } else if (variants.some((v) => titleLower.includes(v) || categoryLower.includes(v) || fullBlob.includes(v))) {
+        matchedTokenCount += 1;
+        score += 12;
+      }
+    }
+    if (matchedTokenCount < tokens.length) {
+      return 0;
+    }
+  }
+
+  return score;
+}
 
 interface FirestoreCartItem {
   id: string;
@@ -387,20 +488,111 @@ const SmartImage: React.FC<{
 };
 
 export default function App() {
-  // Active Bottom Tab Navigation State
-  const [activeBottomTab, setActiveBottomTab] = useState<BottomTab>('home');
+  const qrParams = useMemo(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const sessionId = (params.get('qrPaySession') || '').trim();
+      const sig = (params.get('sig') || '').trim();
+      if (sessionId && sig) {
+        return { sessionId, sig };
+      }
+    } catch {
+      // Ignore query parse error
+    }
+    return null;
+  }, []);
 
-  // Horizontal Category Scroll Ref
+  if (qrParams) {
+    return <MobileQrScanPayPage sessionId={qrParams.sessionId} sig={qrParams.sig} />;
+  }
+
+  return <StorefrontApp />;
+}
+
+function StorefrontApp() {
+  // Active Bottom Tab Navigation State (Opens dedicated Search Results page if ?q= is in URL)
+  const [activeBottomTab, setActiveBottomTab] = useState<BottomTab>(() => {
+    try {
+      const qParam = new URLSearchParams(window.location.search).get('q');
+      if (qParam && qParam.trim().length > 0) return 'search';
+    } catch {
+      // Ignore URL parse error
+    }
+    return 'home';
+  });
+
+  // Horizontal Category Scroll Ref & Search Box Ref
   const categoryScrollRef = useRef<HTMLDivElement | null>(null);
+  const searchBoxContainerRef = useRef<HTMLDivElement | null>(null);
 
   // Auth & User Profile State
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [newUserDealClaimed, setNewUserDealClaimed] = useState(false);
 
-  // Catalog, Search & Price Filtering State
-  const [catalog, setCatalog] = useState<MarketplaceProduct[]>(MARKETPLACE_PRODUCTS);
-  const [searchQuery, setSearchQuery] = useState('');
+  // Catalog, Search & Price Filtering State (Persisted so Admin Add/Edit/Delete changes stay saved)
+  const [catalog, setCatalog] = useState<MarketplaceProduct[]>(() => {
+    try {
+      const saved = window.localStorage.getItem('buykit_catalog_v3');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.map((p: MarketplaceProduct) => ({
+            ...p,
+            imageUrl: resolveAssetUrl(p.imageUrl),
+            extraImages: Array.isArray(p.extraImages)
+              ? p.extraImages.map((u: string) => resolveAssetUrl(u))
+              : undefined,
+          }));
+        }
+      }
+    } catch {
+      // Ignore storage read errors
+    }
+    return MARKETPLACE_PRODUCTS;
+  });
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('buykit_catalog_v3', JSON.stringify(catalog));
+    } catch {
+      // Ignore storage quota errors
+    }
+  }, [catalog]);
+
+  const [searchQuery, setSearchQuery] = useState<string>(() => {
+    try {
+      return new URLSearchParams(window.location.search).get('q') || '';
+    } catch {
+      return '';
+    }
+  });
+  const [submittedSearchQuery, setSubmittedSearchQuery] = useState<string>(() => {
+    try {
+      return new URLSearchParams(window.location.search).get('q') || '';
+    } catch {
+      return '';
+    }
+  });
+  const [isSearchDropdownOpen, setIsSearchDropdownOpen] = useState<boolean>(false);
+  const [isSearchLoading, setIsSearchLoading] = useState<boolean>(false);
+  const [searchLoadProgress, setSearchLoadProgress] = useState<number>(0);
+  const searchLoadTimersRef = useRef<number[]>([]);
+  const [searchFreeShippingOnly, setSearchFreeShippingOnly] = useState<boolean>(false);
+  const [recentSearches, setRecentSearches] = useState<string[]>(() => {
+    try {
+      const saved = window.localStorage.getItem('buykit_recent_searches_v1');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          return parsed.filter((s): s is string => typeof s === 'string').slice(0, 8);
+        }
+      }
+    } catch {
+      // Ignore storage error
+    }
+    return [];
+  });
   const [selectedDealFilter, setSelectedDealFilter] = useState<'all' | DealTier>('all');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [sortBy, setSortBy] = useState<SortOption>('popular');
@@ -444,15 +636,74 @@ export default function App() {
     Record<string, EnrichedProductDetails>
   >(INITIAL_ENRICHED_DESCRIPTIONS);
   const [isAdminStudioOpen, setIsAdminStudioOpen] = useState<boolean>(false);
+  const [adminDashboardTab, setAdminDashboardTab] =
+    useState<AdminDashboardTabKey>('products');
+  const [adminEditingProduct, setAdminEditingProduct] =
+    useState<MarketplaceProduct | null>(null);
+  const [isCurrentUserAdmin, setIsCurrentUserAdmin] = useState<boolean>(false);
+  const [adminEmails, setAdminEmails] = useState<AdminEmailRecord[]>([]);
+  const [firestoreNotifications, setFirestoreNotifications] = useState<
+    AdminNotificationRecord[]
+  >([]);
+  const [localNotifications, setLocalNotifications] = useState<
+    AdminNotificationRecord[]
+  >([]);
+  const [firestoreAdminOrders, setFirestoreAdminOrders] = useState<
+    AdminOrderRecord[]
+  >([]);
+  const [localAdminOrders, setLocalAdminOrders] = useState<AdminOrderRecord[]>([]);
+
+  // Dynamic Storewide Coupons (Managed by Admin in Promo Tab)
+  const [storeCoupons, setStoreCoupons] = useState<CouponOption[]>(() => {
+    try {
+      const saved = window.localStorage.getItem('buykit_store_coupons_v1');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {
+      // ignore storage errors
+    }
+    return AVAILABLE_CHECKOUT_COUPONS;
+  });
+
+  // Startup Welcome Popup Poster Config (Managed by Admin in Promo Tab)
+  const [welcomePopupConfig, setWelcomePopupConfig] =
+    useState<WelcomePopupPosterConfig>(() => {
+      try {
+        const saved = window.localStorage.getItem('buykit_welcome_popup_v1');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (parsed && typeof parsed === 'object') {
+            return { ...DEFAULT_WELCOME_POPUP_CONFIG, ...parsed };
+          }
+        }
+      } catch {
+        // ignore storage errors
+      }
+      return DEFAULT_WELCOME_POPUP_CONFIG;
+    });
+  const [isWelcomePopupOpen, setIsWelcomePopupOpen] = useState<boolean>(false);
+
   const [loadingExtendedDetailsId, setLoadingExtendedDetailsId] = useState<string | null>(
     null
   );
   const [heroSlideIndex, setHeroSlideIndex] = useState(0);
   const [countdownSeconds, setCountdownSeconds] = useState(5 * 3600 + 42 * 60 + 19);
+  const saleEndedNotifiedRef = useRef<boolean>(false);
 
-  // Cart, Orders & Wishlist State (Synced with Firestore for authenticated users + Guest Cart for instant Buy Now Checkout)
+  // Cart, Selection, Checkout & Wishlist State (Strictly stores ONLY user-added products)
   const [cartItems, setCartItems] = useState<FirestoreCartItem[]>([]);
   const [guestCartItems, setGuestCartItems] = useState<FirestoreCartItem[]>([]);
+  const [selectedCartItemIds, setSelectedCartItemIds] = useState<string[]>([]);
+  const knownCartItemIdsRef = useRef<Set<string>>(new Set());
+  const [checkoutSource, setCheckoutSource] = useState<'cart' | 'buy_now'>('cart');
+  const [buyNowItem, setBuyNowItem] = useState<FirestoreCartItem | null>(null);
+  const [addedToCartPopup, setAddedToCartPopup] = useState<{
+    title: string;
+    qty: number;
+  } | null>(null);
+  const addedToCartTimerRef = useRef<number | null>(null);
   const [orders, setOrders] = useState<FirestoreOrderRecord[]>([]);
   const [wishlistItems, setWishlistItems] = useState<FirestoreWishlistItem[]>([]);
 
@@ -469,7 +720,6 @@ export default function App() {
     useState<MarketplaceProduct | null>(null);
   const [pendingBuyNowMode, setPendingBuyNowMode] = useState<boolean>(false);
   const [pendingQty, setPendingQty] = useState<number>(1);
-  const [isPickupMapOpen, setIsPickupMapOpen] = useState(false);
   const [trackingOrder, setTrackingOrder] = useState<TrackableOrder | null>(null);
 
   // Product Comparison State (Up to 3 Products)
@@ -518,7 +768,7 @@ export default function App() {
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState<boolean>(false);
   const [settingsModalTab, setSettingsModalTab] = useState<SettingsTabKey>('profile');
   const [paymentMethod, setPaymentMethod] = useState<'cod' | 'card_express'>('card_express');
-  const [selectedHubName, setSelectedHubName] = useState('BuyKit Colombo Central Hub');
+  const [selectedHubName] = useState('Standard Islandwide Delivery');
   const [checkoutSubmitting, setCheckoutSubmitting] = useState(false);
   const [toastBanner, setToastBanner] = useState<string | null>(null);
   const [isLowConnectionMode] = useState<boolean>(() => detectSlowConnection());
@@ -542,16 +792,87 @@ export default function App() {
     categoryScrollRef.current.scrollBy({ left: offset, behavior: 'smooth' });
   };
 
-  // Auto-advance Admin Promo Banner Carousel & Flash Sale Countdown (pauses auto-carousel in Low-Data Mode to save bandwidth)
+  // Helper to emit Admin Notification (Firestore + live local feed)
+  const pushAdminNotification = async (params: {
+    type: AdminNotificationType;
+    title: string;
+    message: string;
+    relatedId?: string;
+    user?: User | null;
+    fallbackActorName?: string;
+    fallbackActorEmail?: string;
+  }) => {
+    const rec = await emitAdminNotificationToFirestore({
+      ...params,
+      user: params.user || currentUser,
+      fallbackActorName: params.fallbackActorName || fullName,
+      fallbackActorEmail: params.fallbackActorEmail || userEmail,
+    });
+    setLocalNotifications((prev) => [rec, ...prev.slice(0, 99)]);
+  };
+
+  // Persist Dynamic Store Coupons & Welcome Popup Poster Config
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('buykit_store_coupons_v1', JSON.stringify(storeCoupons));
+    } catch {
+      // ignore storage errors
+    }
+  }, [storeCoupons]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        'buykit_welcome_popup_v1',
+        JSON.stringify(welcomePopupConfig)
+      );
+    } catch {
+      // ignore storage errors
+    }
+  }, [welcomePopupConfig]);
+
+  // Show Startup Welcome Popup Poster on site entry if enabled by Admin
+  useEffect(() => {
+    if (!welcomePopupConfig.enabled) return;
+    try {
+      const dismissedKey = `buykit_popup_seen_${welcomePopupConfig.campaignVersion}`;
+      if (window.sessionStorage.getItem(dismissedKey) === '1') return;
+      const timer = window.setTimeout(() => {
+        setIsWelcomePopupOpen(true);
+      }, 900);
+      return () => window.clearTimeout(timer);
+    } catch {
+      // ignore sessionStorage errors
+    }
+  }, [welcomePopupConfig.enabled, welcomePopupConfig.campaignVersion]);
+
+  // Auto-advance Admin Promo Banner Carousel & Flash Sale Countdown (fires sale_ended notification when timer hits 0)
   useEffect(() => {
     const slideInterval = isLowConnectionMode
       ? null
       : window.setInterval(() => {
-          setHeroSlideIndex((prev) => (prev + 1) % adminBanners.length);
+          setHeroSlideIndex((prev) =>
+            adminBanners.length > 0 ? (prev + 1) % adminBanners.length : 0
+          );
         }, 4800);
 
     const timerInterval = window.setInterval(() => {
-      setCountdownSeconds((prev) => (prev > 0 ? prev - 1 : 5 * 3600));
+      setCountdownSeconds((prev) => {
+        if (prev > 1) return prev - 1;
+        if (prev === 1 && !saleEndedNotifiedRef.current) {
+          saleEndedNotifiedRef.current = true;
+          void emitAdminNotificationToFirestore({
+            type: 'sale_ended',
+            title: 'Flash Sale Countdown Ended',
+            message:
+              'The active storefront Flash Sale countdown timer reached 00:00:00 and ended automatically.',
+            relatedId: 'flash_sale_timer',
+          }).then((rec) => {
+            setLocalNotifications((old) => [rec, ...old.slice(0, 99)]);
+          });
+        }
+        return 0;
+      });
     }, 1000);
 
     return () => {
@@ -631,6 +952,7 @@ export default function App() {
 
   const handleResetAllFilters = () => {
     setSearchQuery('');
+    setSubmittedSearchQuery('');
     setSelectedCategory('all');
     setSelectedDealFilter('all');
     setPricePreset('all');
@@ -638,13 +960,172 @@ export default function App() {
     setMaxPriceInput('');
     setMinRatingFilter(0);
     setStockFilter('all');
+    setSearchFreeShippingOnly(false);
     setSortBy('popular');
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('q');
+      window.history.replaceState({}, '', url.pathname + url.search);
+    } catch {
+      // Ignore history error
+    }
   };
 
-  // Toggle Product Stock Status (In Stock Green <-> Out of Stock Red) Product-by-Product
+  // Close search autocomplete dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (
+        searchBoxContainerRef.current &&
+        !searchBoxContainerRef.current.contains(e.target as Node)
+      ) {
+        setIsSearchDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  // Clean up any active search loading progress timers on unmount
+  useEffect(() => {
+    return () => {
+      searchLoadTimersRef.current.forEach((id) => window.clearTimeout(id));
+      searchLoadTimersRef.current = [];
+    };
+  }, []);
+
+  // Daraz / AliExpress Orange Top Loading Bar Animation before Navigating
+  const triggerOrangeSearchLoading = (onNavigate: () => void) => {
+    searchLoadTimersRef.current.forEach((id) => window.clearTimeout(id));
+    searchLoadTimersRef.current = [];
+
+    setIsSearchLoading(true);
+    setSearchLoadProgress(22);
+
+    const t1 = window.setTimeout(() => {
+      setSearchLoadProgress(72);
+    }, 110);
+
+    const t2 = window.setTimeout(() => {
+      setSearchLoadProgress(92);
+      onNavigate();
+    }, 320);
+
+    const t3 = window.setTimeout(() => {
+      setSearchLoadProgress(100);
+    }, 440);
+
+    const t4 = window.setTimeout(() => {
+      setIsSearchLoading(false);
+      setSearchLoadProgress(0);
+    }, 640);
+
+    searchLoadTimersRef.current = [t1, t2, t3, t4];
+  };
+
+  // Daraz / AliExpress Dedicated Search Navigation Handler
+  const handleExecuteSearch = (rawQuery?: string, categoryOverride?: string) => {
+    const term = (rawQuery !== undefined ? rawQuery : searchQuery).trim();
+    setSearchQuery(term);
+    setSubmittedSearchQuery(term);
+    setIsSearchDropdownOpen(false);
+
+    if (!term && !categoryOverride) {
+      try {
+        const url = new URL(window.location.href);
+        url.searchParams.delete('q');
+        window.history.replaceState({}, '', url.pathname + url.search);
+      } catch {
+        // Ignore history error
+      }
+      triggerOrangeSearchLoading(() => {
+        setActiveBottomTab('shop');
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      });
+      return;
+    }
+
+    if (term) {
+      setRecentSearches((prev) => {
+        const next = [
+          term,
+          ...prev.filter((item) => item.toLowerCase() !== term.toLowerCase()),
+        ].slice(0, 8);
+        try {
+          window.localStorage.setItem('buykit_recent_searches_v1', JSON.stringify(next));
+        } catch {
+          // Ignore storage error
+        }
+        return next;
+      });
+    }
+
+    // Clear restrictive previous filters so search finds all relevant items across departments
+    setSelectedCategory(categoryOverride || 'all');
+    setSelectedDealFilter('all');
+    setPricePreset('all');
+    setMinPriceInput('');
+    setMaxPriceInput('');
+    setMinRatingFilter(0);
+    setStockFilter('all');
+    setSearchFreeShippingOnly(false);
+    setSortBy('popular');
+
+    // Run orange Daraz/AliExpress loading bar, then open the Search Results Page
+    triggerOrangeSearchLoading(() => {
+      setActiveBottomTab('search');
+
+      try {
+        const url = new URL(window.location.href);
+        if (term) {
+          url.searchParams.set('q', term);
+        } else {
+          url.searchParams.delete('q');
+        }
+        window.history.replaceState({}, '', url.pathname + url.search);
+      } catch {
+        // Ignore history error
+      }
+
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+  };
+
+  const handleExitSearchPage = () => {
+    setSearchQuery('');
+    setSubmittedSearchQuery('');
+    setSelectedCategory('all');
+    setSearchFreeShippingOnly(false);
+    setActiveBottomTab('home');
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('q');
+      window.history.replaceState({}, '', url.pathname + url.search);
+    } catch {
+      // Ignore history error
+    }
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleRemoveRecentSearch = (termToRemove: string) => {
+    setRecentSearches((prev) => {
+      const next = prev.filter((item) => item !== termToRemove);
+      try {
+        window.localStorage.setItem('buykit_recent_searches_v1', JSON.stringify(next));
+      } catch {
+        // Ignore storage error
+      }
+      return next;
+    });
+  };
+
+  // Toggle Product Stock Status (In Stock Green <-> Out of Stock Red) — STRICTLY ADMIN ONLY
   const handleToggleProductStock = (productId: string, e?: React.MouseEvent) => {
     if (e) {
       e.stopPropagation();
+    }
+    if (!isCurrentUserAdmin) {
+      showToast('Only authorized Admins can change In Stock / Out of Stock inside the Admin Dashboard.');
+      return;
     }
     setCatalog((prev) =>
       prev.map((item) => {
@@ -695,12 +1176,18 @@ export default function App() {
     setSelectedProduct(product);
   };
 
+  // Combine Product-Specific Coupons (added by Admin) with Storewide Checkout Coupons
+  const getCombinedProductCoupons = (product: MarketplaceProduct) => {
+    const customCoupons = product.productCoupons || [];
+    return [...customCoupons, ...storeCoupons];
+  };
+
   // Calculate active coupon savings inside Product View
   const getDetailCouponInfo = (product: MarketplaceProduct, qty: number) => {
     const unitPrice = getEffectivePrice(product);
     const grossTotal = unitPrice * qty;
-    const coupon =
-      AVAILABLE_CHECKOUT_COUPONS.find((c) => c.id === detailCouponId) || null;
+    const allCoupons = getCombinedProductCoupons(product);
+    const coupon = allCoupons.find((c) => c.id === detailCouponId) || null;
     if (!coupon || coupon.type === 'none' || grossTotal < coupon.minSpend) {
       return {
         coupon,
@@ -810,10 +1297,194 @@ export default function App() {
         setOrders([]);
         setWishlistItems([]);
         setNewUserDealClaimed(false);
+        setIsCurrentUserAdmin(false);
+        setIsAdminStudioOpen(false);
+        setAdminEmails([]);
+        setFirestoreNotifications([]);
+        setFirestoreAdminOrders([]);
       }
     });
     return () => unsubscribe();
   }, []);
+
+  // 1B. Resolve Strictly Verified Admin Role (Permanent Root Admins OR Firestore admin_emails/{key})
+  useEffect(() => {
+    if (!authReady || !currentUser || !currentUser.email || !currentUser.emailVerified) {
+      setIsCurrentUserAdmin(false);
+      setIsAdminStudioOpen(false);
+      return;
+    }
+    const normalizedEmail = currentUser.email.trim().toLowerCase();
+    if (isRootAdminEmail(normalizedEmail)) {
+      setIsCurrentUserAdmin(true);
+      return;
+    }
+
+    let cancelled = false;
+    const adminKey = emailToAdminKey(normalizedEmail);
+    getDoc(doc(db, 'admin_emails', adminKey))
+      .then((snap) => {
+        if (!cancelled) {
+          const authorized = snap.exists();
+          setIsCurrentUserAdmin(authorized);
+          if (!authorized) setIsAdminStudioOpen(false);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setIsCurrentUserAdmin(false);
+          setIsAdminStudioOpen(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authReady, currentUser]);
+
+  // 1C. Strictly Admin-Only Firestore Realtime Listeners (admin_emails, admin_notifications, admin_orders)
+  useEffect(() => {
+    if (!authReady || !currentUser || !isCurrentUserAdmin) {
+      setAdminEmails([]);
+      setFirestoreNotifications([]);
+      setFirestoreAdminOrders([]);
+      return;
+    }
+
+    const unsubAdmins = onSnapshot(
+      collection(db, 'admin_emails'),
+      (snap) => {
+        const list: AdminEmailRecord[] = snap.docs.map((docSnap) => {
+          const d = docSnap.data();
+          const createdMs =
+            d.createdAt && typeof d.createdAt.toMillis === 'function'
+              ? d.createdAt.toMillis()
+              : Date.now();
+          return {
+            id: docSnap.id,
+            adminEmailId: String(d.adminEmailId || docSnap.id),
+            email: String(d.email || ''),
+            addedByEmail: String(d.addedByEmail || ROOT_ADMIN_EMAIL),
+            role: 'admin',
+            createdAtMs: createdMs,
+          };
+        });
+        list.sort((a, b) => a.createdAtMs - b.createdAtMs);
+        setAdminEmails(list);
+      },
+      (err) => {
+        console.warn('admin_emails listener warning:', err);
+      }
+    );
+
+    const unsubNotifs = onSnapshot(
+      collection(db, 'admin_notifications'),
+      (snap) => {
+        const list: AdminNotificationRecord[] = snap.docs.map((docSnap) => {
+          const d = docSnap.data();
+          const createdMs =
+            d.createdAt && typeof d.createdAt.toMillis === 'function'
+              ? d.createdAt.toMillis()
+              : Date.now();
+          return {
+            id: docSnap.id,
+            notificationId: String(d.notificationId || docSnap.id),
+            type: (d.type as AdminNotificationType) || 'system',
+            title: String(d.title || 'Activity'),
+            message: String(d.message || ''),
+            actorUserId: String(d.actorUserId || ''),
+            actorName: String(d.actorName || 'Shopper'),
+            actorEmail: String(d.actorEmail || ''),
+            relatedId: String(d.relatedId || ''),
+            read: Boolean(d.read),
+            createdAtMs: createdMs,
+            isLocalOnly: false,
+          };
+        });
+        list.sort((a, b) => b.createdAtMs - a.createdAtMs);
+        setFirestoreNotifications(list);
+      },
+      (err) => {
+        console.warn('admin_notifications listener warning:', err);
+      }
+    );
+
+    const unsubAdminOrders = onSnapshot(
+      collection(db, 'admin_orders'),
+      (snap) => {
+        const list: AdminOrderRecord[] = snap.docs.map((docSnap) => {
+          const d = docSnap.data();
+          const createdMs =
+            d.createdAt && typeof d.createdAt.toMillis === 'function'
+              ? d.createdAt.toMillis()
+              : Date.now();
+          const updatedMs =
+            d.updatedAt && typeof d.updatedAt.toMillis === 'function'
+              ? d.updatedAt.toMillis()
+              : createdMs;
+          return {
+            id: docSnap.id,
+            orderId: String(d.orderId || docSnap.id),
+            userId: String(d.userId || ''),
+            orderNumber: String(d.orderNumber || docSnap.id),
+            customerName: String(d.customerName || 'BuyKit Customer'),
+            customerEmail: String(d.customerEmail || ''),
+            customerPhone: String(d.customerPhone || ''),
+            shippingAddress: String(d.shippingAddress || ''),
+            summaryTitle: String(d.summaryTitle || 'Order'),
+            itemCount: Number(d.itemCount || 1),
+            totalAmount: Number(d.totalAmount || 0),
+            paymentMethod: d.paymentMethod === 'card_express' ? 'card_express' : 'cod',
+            paymentLabel: String(d.paymentLabel || d.paymentMethod || 'Card / COD'),
+            pickupHubName: String(d.pickupHubName || 'Standard Hub'),
+            status: (d.status as OrderStatusValue) || 'processing',
+            createdAtMs: createdMs,
+            updatedAtMs: updatedMs,
+            isLocalOnly: false,
+          };
+        });
+        list.sort((a, b) => b.createdAtMs - a.createdAtMs);
+        setFirestoreAdminOrders(list);
+      },
+      (err) => {
+        console.warn('admin_orders listener warning:', err);
+      }
+    );
+
+    return () => {
+      unsubAdmins();
+      unsubNotifs();
+      unsubAdminOrders();
+    };
+  }, [authReady, currentUser, isCurrentUserAdmin]);
+
+  // Combined Notifications & Global Admin Orders (deduplicated Firestore + live session records)
+  const combinedAdminNotifications = useMemo(() => {
+    const map = new Map<string, AdminNotificationRecord>();
+    for (const n of localNotifications) {
+      map.set(n.notificationId, n);
+    }
+    for (const n of firestoreNotifications) {
+      map.set(n.notificationId, n);
+    }
+    return Array.from(map.values()).sort((a, b) => b.createdAtMs - a.createdAtMs);
+  }, [firestoreNotifications, localNotifications]);
+
+  const unreadAdminNotificationCount = useMemo(
+    () => combinedAdminNotifications.filter((n) => !n.read).length,
+    [combinedAdminNotifications]
+  );
+
+  const combinedAdminOrders = useMemo(() => {
+    const map = new Map<string, AdminOrderRecord>();
+    for (const o of localAdminOrders) {
+      map.set(o.orderId, o);
+    }
+    for (const o of firestoreAdminOrders) {
+      map.set(o.orderId, o);
+    }
+    return Array.from(map.values()).sort((a, b) => b.createdAtMs - a.createdAtMs);
+  }, [firestoreAdminOrders, localAdminOrders]);
 
   // 2. Firestore Listeners (Only attach when authReady and currentUser is signed in)
   useEffect(() => {
@@ -1138,79 +1809,109 @@ export default function App() {
     return product.price;
   };
 
-  // Filtered & Sorted Products (Includes Search, Category, Deal Tier, LKR Price Range & Rating)
+  // Active query used for filtering (uses committed query on search page, or live query elsewhere)
+  const effectiveSearchTerm =
+    activeBottomTab === 'search'
+      ? (submittedSearchQuery || searchQuery).trim()
+      : searchQuery.trim();
+
+  // Live Autocomplete Suggestions for the Daraz / AliExpress Search Dropdown
+  const liveSearchSuggestions = useMemo(() => {
+    const q = searchQuery.trim();
+    if (!q) return [];
+    return catalog
+      .map((item) => ({ item, score: computeProductSearchScore(item, q) }))
+      .filter((entry) => entry.score > 0)
+      .sort((a, b) => b.score - a.score || b.item.soldCount - a.item.soldCount)
+      .slice(0, 6)
+      .map((entry) => entry.item);
+  }, [catalog, searchQuery]);
+
+  // All products matching ONLY the search term (used to compute per-department counts on Search Page)
+  const rawSearchMatchedProducts = useMemo(() => {
+    const q = effectiveSearchTerm;
+    if (!q) return catalog;
+    return catalog
+      .map((item) => ({ item, score: computeProductSearchScore(item, q) }))
+      .filter((entry) => entry.score > 0)
+      .sort((a, b) => b.score - a.score || b.item.soldCount - a.item.soldCount)
+      .map((entry) => entry.item);
+  }, [catalog, effectiveSearchTerm]);
+
+  // Filtered & Sorted Products (Includes Multi-Word Smart Search, Category, Deal Tier, Free Shipping, LKR Price Range & Rating)
   const filteredProducts = useMemo(() => {
     const minVal = minPriceInput.trim() !== '' ? Number(minPriceInput) : null;
     const maxVal = maxPriceInput.trim() !== '' ? Number(maxPriceInput) : null;
+    const q = effectiveSearchTerm;
 
-    const base = catalog.filter((item) => {
-      const effectivePrice = getEffectivePrice(item);
+    const scoredBase = catalog
+      .map((item) => {
+        const score = q ? computeProductSearchScore(item, q) : 1;
+        return { item, score };
+      })
+      .filter(({ item, score }) => {
+        if (q && score <= 0) return false;
+        const effectivePrice = getEffectivePrice(item);
 
-      const matchesDeal =
-        selectedDealFilter === 'all' || item.dealType === selectedDealFilter;
-      const matchesCategory =
-        selectedCategory === 'all' || item.category === selectedCategory;
+        const matchesDeal =
+          selectedDealFilter === 'all' || item.dealType === selectedDealFilter;
+        const matchesCategory =
+          selectedCategory === 'all' || item.category === selectedCategory;
 
-      const matchesMinPrice =
-        minVal === null || Number.isNaN(minVal) || effectivePrice >= minVal;
-      const matchesMaxPrice =
-        maxVal === null || Number.isNaN(maxVal) || effectivePrice <= maxVal;
+        const matchesMinPrice =
+          minVal === null || Number.isNaN(minVal) || effectivePrice >= minVal;
+        const matchesMaxPrice =
+          maxVal === null || Number.isNaN(maxVal) || effectivePrice <= maxVal;
 
-      const matchesRating = minRatingFilter === 0 || item.rating >= minRatingFilter;
-      const matchesStock =
-        stockFilter === 'all' ||
-        (stockFilter === 'in_stock' && item.stockRemaining > 0) ||
-        (stockFilter === 'out_of_stock' && item.stockRemaining <= 0);
+        const matchesRating = minRatingFilter === 0 || item.rating >= minRatingFilter;
+        const matchesStock =
+          stockFilter === 'all' ||
+          (stockFilter === 'in_stock' && item.stockRemaining > 0) ||
+          (stockFilter === 'out_of_stock' && item.stockRemaining <= 0);
+        const matchesFreeShipping = !searchFreeShippingOnly || item.freeShipping;
 
-      const q = searchQuery.trim().toLowerCase();
-      const matchesSearch =
-        !q ||
-        item.title.toLowerCase().includes(q) ||
-        item.tagline.toLowerCase().includes(q) ||
-        item.category.toLowerCase().includes(q) ||
-        item.storeName.toLowerCase().includes(q) ||
-        item.dealLabel.toLowerCase().includes(q) ||
-        item.description.toLowerCase().includes(q) ||
-        item.specs.some((sp) => sp.toLowerCase().includes(q));
+        return (
+          matchesDeal &&
+          matchesCategory &&
+          matchesMinPrice &&
+          matchesMaxPrice &&
+          matchesRating &&
+          matchesStock &&
+          matchesFreeShipping
+        );
+      });
 
-      return (
-        matchesDeal &&
-        matchesCategory &&
-        matchesMinPrice &&
-        matchesMaxPrice &&
-        matchesRating &&
-        matchesStock &&
-        matchesSearch
-      );
-    });
-
-    const sorted = [...base];
+    const sorted = [...scoredBase];
     if (sortBy === 'price_asc') {
-      sorted.sort((a, b) => getEffectivePrice(a) - getEffectivePrice(b));
+      sorted.sort((a, b) => getEffectivePrice(a.item) - getEffectivePrice(b.item));
     } else if (sortBy === 'price_desc') {
-      sorted.sort((a, b) => getEffectivePrice(b) - getEffectivePrice(a));
+      sorted.sort((a, b) => getEffectivePrice(b.item) - getEffectivePrice(a.item));
     } else if (sortBy === 'rating') {
-      sorted.sort((a, b) => b.rating - a.rating);
+      sorted.sort((a, b) => b.item.rating - a.item.rating);
     } else if (sortBy === 'discount') {
       sorted.sort((a, b) => {
-        const discA = (a.originalPrice - getEffectivePrice(a)) / a.originalPrice;
-        const discB = (b.originalPrice - getEffectivePrice(b)) / b.originalPrice;
+        const discA = (a.item.originalPrice - getEffectivePrice(a.item)) / a.item.originalPrice;
+        const discB = (b.item.originalPrice - getEffectivePrice(b.item)) / b.item.originalPrice;
         return discB - discA;
       });
+    } else if (q) {
+      // Best Match relevance first when searching
+      sorted.sort((a, b) => b.score - a.score || b.item.soldCount - a.item.soldCount);
     } else {
-      sorted.sort((a, b) => b.soldCount - a.soldCount);
+      sorted.sort((a, b) => b.item.soldCount - a.item.soldCount);
     }
-    return sorted;
+    return sorted.map((entry) => entry.item);
   }, [
     catalog,
     selectedDealFilter,
     selectedCategory,
-    searchQuery,
+    effectiveSearchTerm,
     sortBy,
     minPriceInput,
     maxPriceInput,
     minRatingFilter,
     stockFilter,
+    searchFreeShippingOnly,
     newUserDealClaimed,
   ]);
 
@@ -1246,28 +1947,87 @@ export default function App() {
     minRatingFilter > 0 ||
     stockFilter !== 'all';
 
-  // Effective Checkout Items (Uses authenticated Firestore cart if non-empty, or guestCartItems so Buy Now works immediately for everyone)
-  const effectiveCheckoutItems = useMemo(
-    () => (cartItems.length > 0 ? cartItems : guestCartItems),
-    [cartItems, guestCartItems]
+  // Daraz-Style Black Transparent "Added to Cart" Popup (Strictly visible for 1.5 seconds)
+  const triggerAddedToCartPopup = (title: string, qty: number) => {
+    if (addedToCartTimerRef.current !== null) {
+      window.clearTimeout(addedToCartTimerRef.current);
+    }
+    setAddedToCartPopup({ title, qty });
+    addedToCartTimerRef.current = window.setTimeout(() => {
+      setAddedToCartPopup(null);
+      addedToCartTimerRef.current = null;
+    }, 1500);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (addedToCartTimerRef.current !== null) {
+        window.clearTimeout(addedToCartTimerRef.current);
+      }
+    };
+  }, []);
+
+  // Strictly User-Added Cart Items (Authenticated Firestore cart OR local guest cart; never pre-seeded)
+  const userCartItems = useMemo(
+    () => (currentUser ? cartItems : guestCartItems),
+    [currentUser, cartItems, guestCartItems]
   );
 
-  // Add to Cart Handler — Works immediately for both guests and signed-in users, and on Buy Now takes the user straight to the Checkout Page!
+  // Keep Cart Item Selection in sync: newly added items auto-select, removed items clean up, manual unselects preserved
+  useEffect(() => {
+    const currentIdList = userCartItems.map((item) => item.id);
+    const currentIdSet = new Set(currentIdList);
+    const prevKnown = knownCartItemIdsRef.current;
+
+    const newlyAddedIds = currentIdList.filter((id) => !prevKnown.has(id));
+    setSelectedCartItemIds((prev) => {
+      const kept = prev.filter((id) => currentIdSet.has(id));
+      const merged = [...kept];
+      for (const id of newlyAddedIds) {
+        if (!merged.includes(id)) merged.push(id);
+      }
+      return merged;
+    });
+
+    knownCartItemIdsRef.current = currentIdSet;
+  }, [userCartItems]);
+
+  const selectedCartItems = useMemo(
+    () => userCartItems.filter((item) => selectedCartItemIds.includes(item.id)),
+    [userCartItems, selectedCartItemIds]
+  );
+
+  // Active Checkout Page Items: Either selected Cart items (via Pay Now) OR direct Buy Now product
+  const activeCheckoutItems = useMemo(
+    () => (checkoutSource === 'buy_now' && buyNowItem ? [buyNowItem] : selectedCartItems),
+    [checkoutSource, buyNowItem, selectedCartItems]
+  );
+
+  const handleToggleSelectCartItem = (itemId: string) => {
+    setSelectedCartItemIds((prev) =>
+      prev.includes(itemId) ? prev.filter((id) => id !== itemId) : [...prev, itemId]
+    );
+  };
+
+  const handleToggleSelectAllCartItems = () => {
+    if (userCartItems.length === 0) return;
+    if (selectedCartItemIds.length === userCartItems.length) {
+      setSelectedCartItemIds([]);
+    } else {
+      setSelectedCartItemIds(userCartItems.map((item) => item.id));
+    }
+  };
+
+  // Add to Cart Handler — Enforces Admin Stock Status, Fires Admin Notification & Shows 1.5s Black Transparent Popup
   const handleAddToCart = async (
     product: MarketplaceProduct,
     qtyToAdd = 1,
     explicitUser?: User,
     goToCheckoutAfter = false
   ) => {
-    // If product was marked out of stock, auto-restock it so Add Cart / Buy Now always works smoothly
     if (product.stockRemaining <= 0) {
-      setCatalog((prev) =>
-        prev.map((item) =>
-          item.id === product.id
-            ? { ...item, stockRemaining: Math.max(12, Math.round(item.totalStock * 0.25)) }
-            : item
-        )
-      );
+      showToast(`"${product.title}" is currently Out of Stock.`);
+      return;
     }
 
     const activeUser = explicitUser || currentUser;
@@ -1275,46 +2035,55 @@ export default function App() {
     const unitPrice = getEffectivePrice(product);
     const cleanQty = Math.min(99, Math.max(1, qtyToAdd));
 
-    // Always update local guestCartItems so Checkout Page is immediately populated
-    setGuestCartItems((prev) => {
-      const existing = prev.find((c) => c.id === itemId);
-      if (existing) {
-        return prev.map((c) =>
-          c.id === itemId
-            ? { ...c, quantity: Math.min(99, c.quantity + cleanQty), price: unitPrice }
-            : c
-        );
-      }
-      return [
-        ...prev,
-        {
-          id: itemId,
-          userId: activeUser?.uid || 'guest_shopper',
-          productId: itemId,
-          title: product.title,
-          category: product.category,
-          dealType: product.dealType,
-          price: unitPrice,
-          originalPrice: product.originalPrice,
-          quantity: cleanQty,
-          imageUrl: product.imageUrl,
-        },
-      ];
+    const lineItemPayload: FirestoreCartItem = {
+      id: itemId,
+      userId: activeUser?.uid || 'guest_shopper',
+      productId: itemId,
+      title: product.title,
+      category: product.category,
+      dealType: product.dealType,
+      price: unitPrice,
+      originalPrice: product.originalPrice,
+      quantity: cleanQty,
+      imageUrl: product.imageUrl,
+    };
+
+    // Direct Buy Now -> Jump straight to the separate Checkout Page with this item
+    if (goToCheckoutAfter) {
+      setBuyNowItem(lineItemPayload);
+      setCheckoutSource('buy_now');
+      setSelectedProduct(null);
+      setActiveBottomTab('checkout');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+
+    void pushAdminNotification({
+      type: 'cart_add',
+      title: `Added to Cart: ${product.title}`,
+      message: `${cleanQty}x "${product.title}" (${formatLKR(unitPrice * cleanQty)}) was added to a shopper's cart.`,
+      relatedId: product.id,
+      user: activeUser,
     });
 
+    // Ensure the added item is checked/selected in Cart
+    setSelectedCartItemIds((prev) => (prev.includes(itemId) ? prev : [...prev, itemId]));
+
+    // Show Daraz-style black transparent "Added to Cart" message for 1.5s
+    triggerAddedToCartPopup(product.title, cleanQty);
+
     if (!activeUser) {
-      if (goToCheckoutAfter) {
-        setSelectedProduct(null);
-        setActiveBottomTab('cart');
-        window.scrollTo({ top: 0, behavior: 'smooth' });
-        showToast(
-          `Proceeding to Checkout for "${product.title}" — Select Payment Option, Coupons & Delivery!`
-        );
-      } else {
-        showToast(
-          `Added ${cleanQty}x "${product.title}" (${formatLKR(unitPrice)}) to your Cart!`
-        );
-      }
+      setGuestCartItems((prev) => {
+        const existing = prev.find((c) => c.id === itemId);
+        if (existing) {
+          return prev.map((c) =>
+            c.id === itemId
+              ? { ...c, quantity: Math.min(99, c.quantity + cleanQty), price: unitPrice }
+              : c
+          );
+        }
+        return [...prev, lineItemPayload];
+      });
       return;
     }
 
@@ -1346,23 +2115,12 @@ export default function App() {
           updatedAt: serverTimestamp(),
         });
       }
-
-      if (goToCheckoutAfter) {
-        setSelectedProduct(null);
-        setActiveBottomTab('cart');
-        window.scrollTo({ top: 0, behavior: 'smooth' });
-        showToast(
-          `Proceeding to Checkout for "${product.title}" — Select Payment Option, Coupons & Delivery!`
-        );
-      } else {
-        showToast(`Added ${cleanQty}x "${product.title}" (${formatLKR(unitPrice)}) to your cart!`);
-      }
     } catch (err) {
       handleFirestoreError(err, OperationType.WRITE, itemPath);
     }
   };
 
-  // Buy Now Handler — Adds item and jumps straight to the Daraz / AliExpress Checkout Page
+  // Buy Now Handler — Jumps straight to the separate Checkout Page for the chosen product
   const handleBuyNow = async (product: MarketplaceProduct, qtyToBuy = 1) => {
     await handleAddToCart(product, qtyToBuy, undefined, true);
   };
@@ -1440,20 +2198,38 @@ export default function App() {
 
   const handleUpdateCartQuantity = async (item: FirestoreCartItem, delta: number) => {
     const nextQty = item.quantity + delta;
-    setGuestCartItems((prev) => {
-      if (nextQty <= 0) return prev.filter((c) => c.id !== item.id);
-      return prev.map((c) =>
-        c.id === item.id ? { ...c, quantity: Math.min(99, nextQty) } : c
-      );
-    });
 
-    if (!currentUser) return;
+    // If adjusting Buy Now item on Checkout Page, update buyNowItem directly
+    if (activeBottomTab === 'checkout' && checkoutSource === 'buy_now' && buyNowItem?.id === item.id) {
+      if (nextQty <= 0) {
+        setBuyNowItem(null);
+        setCheckoutSource('cart');
+      } else {
+        setBuyNowItem((prev) => (prev ? { ...prev, quantity: Math.min(99, nextQty) } : null));
+      }
+      return;
+    }
+
+    if (!currentUser) {
+      setGuestCartItems((prev) => {
+        if (nextQty <= 0) return prev.filter((c) => c.id !== item.id);
+        return prev.map((c) =>
+          c.id === item.id ? { ...c, quantity: Math.min(99, nextQty) } : c
+        );
+      });
+      if (nextQty <= 0) {
+        setSelectedCartItemIds((prev) => prev.filter((id) => id !== item.id));
+      }
+      return;
+    }
+
     const itemPath = `users/${currentUser.uid}/cart/${item.id}`;
     const itemRef = doc(db, 'users', currentUser.uid, 'cart', item.id);
 
     try {
       if (nextQty <= 0) {
         await deleteDoc(itemRef);
+        setSelectedCartItemIds((prev) => prev.filter((id) => id !== item.id));
       } else if (nextQty <= 99) {
         await updateDoc(itemRef, {
           quantity: nextQty,
@@ -1468,13 +2244,43 @@ export default function App() {
   };
 
   const handleRemoveCartItem = async (itemId: string) => {
-    setGuestCartItems((prev) => prev.filter((c) => c.id !== itemId));
-    if (!currentUser) return;
+    if (activeBottomTab === 'checkout' && checkoutSource === 'buy_now' && buyNowItem?.id === itemId) {
+      setBuyNowItem(null);
+      setCheckoutSource('cart');
+      return;
+    }
+
+    setSelectedCartItemIds((prev) => prev.filter((id) => id !== itemId));
+
+    if (!currentUser) {
+      setGuestCartItems((prev) => prev.filter((c) => c.id !== itemId));
+      return;
+    }
     const itemPath = `users/${currentUser.uid}/cart/${itemId}`;
     try {
       await deleteDoc(doc(db, 'users', currentUser.uid, 'cart', itemId));
     } catch (err) {
       handleFirestoreError(err, OperationType.DELETE, itemPath);
+    }
+  };
+
+  const handleRemoveSelectedCartItems = async () => {
+    if (selectedCartItemIds.length === 0) return;
+    const idsToRemove = [...selectedCartItemIds];
+    setSelectedCartItemIds([]);
+
+    if (!currentUser) {
+      const removeSet = new Set(idsToRemove);
+      setGuestCartItems((prev) => prev.filter((c) => !removeSet.has(c.id)));
+      return;
+    }
+
+    for (const id of idsToRemove) {
+      try {
+        await deleteDoc(doc(db, 'users', currentUser.uid, 'cart', id));
+      } catch (err) {
+        handleFirestoreError(err, OperationType.DELETE, `users/${currentUser.uid}/cart/${id}`);
+      }
     }
   };
 
@@ -1516,7 +2322,7 @@ export default function App() {
     paymentMethodLabel: string;
     suppressAutoRedirect?: boolean;
   }) => {
-    if (effectiveCheckoutItems.length === 0) return;
+    if (activeCheckoutItems.length === 0) return;
 
     const cleanPhone = phone.trim().slice(0, VALIDATION_LIMITS.MAX_PHONE);
     const cleanAddress = shippingAddress.trim().slice(0, VALIDATION_LIMITS.MAX_ADDRESS);
@@ -1531,11 +2337,12 @@ export default function App() {
     setCheckoutSubmitting(true);
     const orderCode = `BKP_${Date.now().toString().slice(-6)}`;
     const orderId = sanitizeId(orderCode);
-    const totalItemsCount = effectiveCheckoutItems.reduce(
+    const checkedOutIdSet = new Set(activeCheckoutItems.map((item) => item.id));
+    const totalItemsCount = activeCheckoutItems.reduce(
       (acc, item) => acc + item.quantity,
       0
     );
-    const summaryText = effectiveCheckoutItems
+    const summaryText = activeCheckoutItems
       .map((c) => `${c.quantity}x ${c.title}`)
       .join(', ')
       .slice(0, VALIDATION_LIMITS.MAX_SUMMARY);
@@ -1544,7 +2351,7 @@ export default function App() {
     const cleanHubName = selectedHubName.slice(0, VALIDATION_LIMITS.MAX_HUB_NAME);
     const cleanSummary = summaryText || 'BuyKit Marketplace Order';
 
-    // If guest user clicks Place Order, create a live demo order
+    // If guest user clicks Place Order, create a live demo order and remove ONLY checked-out items
     if (!currentUser) {
       const guestOrder: TrackableOrder = {
         id: orderId,
@@ -1559,9 +2366,46 @@ export default function App() {
         createdAtMs: Date.now(),
         isDemoOrder: true,
       };
-      setGuestCartItems([]);
+      if (checkoutSource === 'buy_now') {
+        setBuyNowItem(null);
+        setCheckoutSource('cart');
+      } else {
+        setGuestCartItems((prev) => prev.filter((item) => !checkedOutIdSet.has(item.id)));
+        setSelectedCartItemIds((prev) => prev.filter((id) => !checkedOutIdSet.has(id)));
+      }
       setCheckoutSubmitting(false);
       setLastPlacedTrackableOrder(guestOrder);
+
+      const localGuestAdminOrder: AdminOrderRecord = {
+        id: orderId,
+        orderId,
+        userId: 'guest_shopper',
+        orderNumber: orderCode,
+        customerName: fullName.trim() || 'Guest Shopper',
+        customerEmail: userEmail.trim() || 'guest@buykit.lk',
+        customerPhone: cleanPhone,
+        shippingAddress: `${cleanAddress}, ${cityDistrict} (${cleanPostal})`,
+        summaryTitle: cleanSummary,
+        itemCount: cleanItemCount,
+        totalAmount: cleanTotalAmount,
+        paymentMethod,
+        paymentLabel: summary.paymentMethodLabel.slice(0, 140),
+        pickupHubName: cleanHubName,
+        status: 'preparing',
+        createdAtMs: Date.now(),
+        updatedAtMs: Date.now(),
+        isLocalOnly: true,
+      };
+      setLocalAdminOrders((prev) => [localGuestAdminOrder, ...prev]);
+
+      void pushAdminNotification({
+        type: 'order_placed',
+        title: `New Order #${orderCode} (${formatLKR(cleanTotalAmount)})`,
+        message: `${localGuestAdminOrder.customerName} purchased ${cleanSummary} via ${summary.paymentMethodLabel}.`,
+        relatedId: orderId,
+        fallbackActorName: localGuestAdminOrder.customerName,
+        fallbackActorEmail: localGuestAdminOrder.customerEmail,
+      });
 
       if (!summary.suppressAutoRedirect) {
         setActiveBottomTab('account');
@@ -1584,6 +2428,20 @@ export default function App() {
         0,
         VALIDATION_LIMITS.MAX_EMAIL
       );
+      const customerNameToSave = (
+        fullName.trim() ||
+        currentUser.displayName ||
+        emailToSave.split('@')[0] ||
+        'BuyKit Customer'
+      ).slice(0, VALIDATION_LIMITS.MAX_DISPLAY_NAME);
+      const fullShippingAddress = `${cleanAddress}${cityDistrict ? `, ${cityDistrict}` : ''} (${cleanPostal})`.slice(
+        0,
+        VALIDATION_LIMITS.MAX_ADDRESS
+      );
+      const cleanPaymentLabel = (
+        summary.paymentMethodLabel ||
+        (paymentMethod === 'cod' ? 'Cash on Delivery' : 'Card / Express')
+      ).slice(0, 140);
 
       if (privSnap.exists()) {
         await updateDoc(privateRef, {
@@ -1618,10 +2476,73 @@ export default function App() {
         updatedAt: serverTimestamp(),
       });
 
-      for (const item of cartItems) {
-        await deleteDoc(doc(db, 'users', uid, 'cart', item.id));
+      // Mirror full order details to global admin_orders collection for Admin Order Tracking Tab
+      try {
+        await setDoc(doc(db, 'admin_orders', orderId), {
+          orderId,
+          userId: uid,
+          orderNumber: orderCode,
+          customerName: customerNameToSave,
+          customerEmail: emailToSave,
+          customerPhone: cleanPhone,
+          shippingAddress: fullShippingAddress,
+          summaryTitle: cleanSummary,
+          itemCount: cleanItemCount,
+          totalAmount: cleanTotalAmount,
+          paymentMethod,
+          paymentLabel: cleanPaymentLabel,
+          pickupHubName: cleanHubName,
+          status: 'preparing',
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      } catch (mirrorErr) {
+        console.warn('admin_orders mirror skipped:', mirrorErr);
       }
-      setGuestCartItems([]);
+
+      setLocalAdminOrders((prev) => [
+        {
+          id: orderId,
+          orderId,
+          userId: uid,
+          orderNumber: orderCode,
+          customerName: customerNameToSave,
+          customerEmail: emailToSave,
+          customerPhone: cleanPhone,
+          shippingAddress: fullShippingAddress,
+          summaryTitle: cleanSummary,
+          itemCount: cleanItemCount,
+          totalAmount: cleanTotalAmount,
+          paymentMethod,
+          paymentLabel: cleanPaymentLabel,
+          pickupHubName: cleanHubName,
+          status: 'preparing',
+          createdAtMs: Date.now(),
+          updatedAtMs: Date.now(),
+        },
+        ...prev,
+      ]);
+
+      void pushAdminNotification({
+        type: 'order_placed',
+        title: `New Order #${orderCode} (${formatLKR(cleanTotalAmount)})`,
+        message: `${customerNameToSave} ordered ${cleanSummary} · Paid via ${cleanPaymentLabel}.`,
+        relatedId: orderId,
+        user: currentUser,
+        fallbackActorName: customerNameToSave,
+        fallbackActorEmail: emailToSave,
+      });
+
+      // Remove ONLY the checked-out items (leave unselected cart items untouched)
+      if (checkoutSource === 'buy_now') {
+        setBuyNowItem(null);
+        setCheckoutSource('cart');
+      } else {
+        for (const item of activeCheckoutItems) {
+          await deleteDoc(doc(db, 'users', uid, 'cart', item.id));
+        }
+        setSelectedCartItemIds((prev) => prev.filter((id) => !checkedOutIdSet.has(id)));
+      }
 
       const confirmedOrderObj: TrackableOrder = {
         id: orderId,
@@ -1665,6 +2586,14 @@ export default function App() {
         status: 'cancelled',
         updatedAt: serverTimestamp(),
       });
+      try {
+        await updateDoc(doc(db, 'admin_orders', order.id), {
+          status: 'cancelled',
+          updatedAt: serverTimestamp(),
+        });
+      } catch {
+        // Ignore if mirror doc didn't exist for legacy order
+      }
       showToast(`Order #${order.orderNumber} has been cancelled.`);
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, orderPath);
@@ -1675,19 +2604,198 @@ export default function App() {
     order: TrackableOrder,
     nextStage: OrderTrackingStageKey
   ) => {
-    if (!currentUser || order.isDemoOrder || order.status === 'cancelled') return;
+    if (!isCurrentUserAdmin || !currentUser || order.isDemoOrder || order.status === 'cancelled') {
+      return;
+    }
     if (order.status === 'delivered') return;
 
-    const orderPath = `users/${currentUser.uid}/orders/${order.id}`;
+    const orderPath = `users/${order.userId}/orders/${order.id}`;
     try {
-      await updateDoc(doc(db, 'users', currentUser.uid, 'orders', order.id), {
+      await updateDoc(doc(db, 'users', order.userId, 'orders', order.id), {
         status: nextStage,
         updatedAt: serverTimestamp(),
       });
+      try {
+        await updateDoc(doc(db, 'admin_orders', order.id), {
+          status: nextStage,
+          updatedAt: serverTimestamp(),
+        });
+      } catch {
+        // Ignore if legacy order has no mirror doc
+      }
       const stageLabel = getStageLabelFromStatus(nextStage);
       showToast(`Order #${order.orderNumber} tracking updated to "${stageLabel}"!`);
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, orderPath);
+    }
+  };
+
+  // Admin Dashboard: Update ANY customer's order status across both admin_orders & users/{uid}/orders
+  const handleUpdateAdminOrderStatus = async (
+    order: AdminOrderRecord,
+    nextStatus: OrderStatusValue
+  ) => {
+    if (!isCurrentUserAdmin) {
+      showToast('Only authorized Admins can update order status.');
+      return;
+    }
+    setLocalAdminOrders((prev) =>
+      prev.map((o) =>
+        o.orderId === order.orderId ? { ...o, status: nextStatus, updatedAtMs: Date.now() } : o
+      )
+    );
+    if (order.isLocalOnly) {
+      showToast(`Order #${order.orderNumber} status changed to "${nextStatus}".`);
+      return;
+    }
+    try {
+      await updateDoc(doc(db, 'admin_orders', order.orderId), {
+        status: nextStatus,
+        updatedAt: serverTimestamp(),
+      });
+      if (order.userId && order.userId !== 'guest_shopper') {
+        try {
+          await updateDoc(doc(db, 'users', order.userId, 'orders', order.orderId), {
+            status: nextStatus,
+            updatedAt: serverTimestamp(),
+          });
+        } catch {
+          // Customer order subdoc may not exist for older/guest orders
+        }
+      }
+      showToast(`Updated Order #${order.orderNumber} status to "${nextStatus.toUpperCase()}".`);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `admin_orders/${order.orderId}`);
+    }
+  };
+
+  // Admin Dashboard: Answer Customer Product Question (Admin-Only)
+  const handleAdminAnswerQuestion = async (
+    question: FirestoreProductQuestion,
+    answerText: string
+  ) => {
+    if (!isCurrentUserAdmin || !currentUser) {
+      showToast('Only authorized Admins can answer customer product questions.');
+      return;
+    }
+    const cleanAns = answerText.trim().slice(0, VALIDATION_LIMITS.MAX_QUESTION_TEXT);
+    if (!cleanAns) return;
+    const answerId = sanitizeId(`ans_${question.questionId}_${Date.now()}`);
+    const answerPath = `question_answers/${answerId}`;
+    try {
+      await ensureUserProfileDocument(currentUser);
+      await setDoc(doc(db, 'question_answers', answerId), {
+        answerId,
+        questionId: sanitizeId(question.questionId),
+        productId: sanitizeId(question.productId),
+        userId: currentUser.uid,
+        userName: (
+          currentUser.displayName ||
+          currentUser.email?.split('@')[0] ||
+          'BuyKit Admin'
+        ).slice(0, VALIDATION_LIMITS.MAX_DISPLAY_NAME),
+        answerText: cleanAns,
+        visibility: 'public',
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      showToast('Posted Official Admin Reply to customer question!');
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, answerPath);
+    }
+  };
+
+  const handleAdminDeleteQuestion = async (questionId: string) => {
+    if (!isCurrentUserAdmin) return;
+    try {
+      await deleteDoc(doc(db, 'product_questions', questionId));
+      showToast('Deleted product question.');
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `product_questions/${questionId}`);
+    }
+  };
+
+  const handleAdminDeleteAnswer = async (answerId: string) => {
+    if (!isCurrentUserAdmin) return;
+    try {
+      await deleteDoc(doc(db, 'question_answers', answerId));
+      showToast('Deleted answer.');
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `question_answers/${answerId}`);
+    }
+  };
+
+  // Admin Dashboard: Add / Remove Additional Admin Gmail Accounts
+  const handleAddAdminEmail = async (email: string) => {
+    if (!isCurrentUserAdmin || !currentUser) return;
+    const normalized = email.trim().toLowerCase();
+    const adminEmailId = emailToAdminKey(normalized);
+    const path = `admin_emails/${adminEmailId}`;
+    try {
+      await setDoc(doc(db, 'admin_emails', adminEmailId), {
+        adminEmailId,
+        email: normalized,
+        addedByEmail: (currentUser.email || ROOT_ADMIN_EMAIL).slice(0, VALIDATION_LIMITS.MAX_EMAIL),
+        role: 'admin',
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      showToast(`Granted Admin Panel access to ${normalized}!`);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, path);
+    }
+  };
+
+  const handleRemoveAdminEmail = async (record: AdminEmailRecord) => {
+    if (!isCurrentUserAdmin) return;
+    if (isRootAdminEmail(record.email)) {
+      showToast('Permanent Root Admin cannot be removed.');
+      return;
+    }
+    try {
+      await deleteDoc(doc(db, 'admin_emails', record.adminEmailId));
+      showToast(`Removed Admin access for ${record.email}.`);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `admin_emails/${record.adminEmailId}`);
+    }
+  };
+
+  // Admin Dashboard: Notification Mark Read / Delete Handlers
+  const handleMarkNotificationRead = async (notifId: string) => {
+    setLocalNotifications((prev) =>
+      prev.map((n) => (n.notificationId === notifId ? { ...n, read: true } : n))
+    );
+    const target = firestoreNotifications.find((n) => n.notificationId === notifId);
+    if (target && isCurrentUserAdmin) {
+      try {
+        await updateDoc(doc(db, 'admin_notifications', notifId), { read: true });
+      } catch {
+        // ignore if already deleted
+      }
+    }
+  };
+
+  const handleMarkAllNotificationsRead = async () => {
+    setLocalNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+    if (!isCurrentUserAdmin) return;
+    const unreadRemote = firestoreNotifications.filter((n) => !n.read);
+    await Promise.all(
+      unreadRemote.map((n) =>
+        updateDoc(doc(db, 'admin_notifications', n.notificationId), { read: true }).catch(() => {})
+      )
+    );
+    showToast('Marked all admin notifications as read.');
+  };
+
+  const handleDeleteNotification = async (notifId: string) => {
+    setLocalNotifications((prev) => prev.filter((n) => n.notificationId !== notifId));
+    const target = firestoreNotifications.find((n) => n.notificationId === notifId);
+    if (target && isCurrentUserAdmin) {
+      try {
+        await deleteDoc(doc(db, 'admin_notifications', notifId));
+      } catch {
+        // ignore
+      }
     }
   };
 
@@ -1753,7 +2861,7 @@ export default function App() {
     }
   };
 
-  const totalCartUnits = effectiveCheckoutItems.reduce(
+  const totalCartUnits = userCartItems.reduce(
     (sum, item) => sum + item.quantity,
     0
   );
@@ -1779,14 +2887,14 @@ export default function App() {
     return 'Price Filter (LKR)';
   }, [pricePreset, minPriceInput, maxPriceInput]);
 
-  // Horizontal Scrollable Categories Strip Component
+  // Horizontal Scrollable Categories Strip Component (Fixed for Vercel & Mobile Touch Scroll)
   const renderHorizontalCategoriesAndFilterBar = () => (
-    <div className="mb-5">
-      {/* HORIZONTAL SCROLLABLE CATEGORIES BAR ("categaris tika හරහට දාන්න, හරහට scroll කරන්නපුලුවන් වෙන්න්අ") */}
-      <div className="rounded-xl border border-slate-200 bg-white p-3.5 shadow-2xs">
-        <div className="mb-2.5 flex items-center justify-between gap-2">
+    <div className="mb-5 w-full max-w-full overflow-hidden">
+      {/* HORIZONTAL SCROLLABLE CATEGORIES BAR */}
+      <div className="w-full max-w-full overflow-hidden rounded-xl border border-slate-200 bg-white p-3.5 shadow-2xs">
+        <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
-            <LayoutGrid className="h-4 w-4 text-[#F85606]" />
+            <LayoutGrid className="h-4 w-4 shrink-0 text-[#F85606]" />
             <span className="font-display text-xs font-bold tracking-wider text-slate-900 uppercase">
               Categories · Swipe / Scroll Horizontally
             </span>
@@ -1821,34 +2929,34 @@ export default function App() {
           </div>
         </div>
 
-        {/* Single-Row Horizontal Scrollable Flex Strip with Illustrative Thumbnails & Micro-Badges */}
+        {/* Single-Row Horizontal Scrollable Flex Strip with Eager Bundled Thumbnails & Micro-Badges */}
         <div
           ref={categoryScrollRef}
-          className="flex flex-nowrap items-center gap-2.5 overflow-x-auto scroll-smooth pb-1.5"
+          className="flex w-full flex-nowrap items-center gap-2.5 overflow-x-auto overscroll-x-contain touch-pan-x scroll-smooth pb-1.5"
         >
           {/* All Categories Card with Showcase Thumbnail */}
-          <motion.button
-            whileHover={{ y: -2 }}
-            whileTap={{ scale: 0.98 }}
+          <button
             type="button"
             onClick={() => {
               setSelectedCategory('all');
               setSelectedDealFilter('all');
             }}
-            className={`group flex min-w-[188px] shrink-0 snap-start items-center gap-3 rounded-xl border p-2 text-left transition-all ${
+            className={`group flex min-w-[184px] shrink-0 snap-start items-center gap-3 rounded-xl border p-2 text-left transition-all ${
               selectedCategory === 'all' && selectedDealFilter === 'all'
                 ? 'border-[#F85606] bg-[#FFF3EB] text-[#F85606] shadow-2xs ring-1 ring-[#F85606]/30'
                 : 'border-slate-200 bg-slate-50/70 text-slate-800 hover:border-orange-300 hover:bg-white'
             }`}
           >
-            <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-xl border border-slate-200/80 bg-white shadow-2xs">
-              <SmartImage
-                src={HERO_BANNER_IMAGE}
+            <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-xl border border-slate-200/80 bg-slate-100 shadow-2xs">
+              <img
+                src={resolveAssetUrl(HERO_BANNER_IMAGE)}
                 alt="All Categories"
+                loading="eager"
+                decoding="async"
                 className="h-full w-full object-cover"
               />
               <span
-                className={`absolute right-0.5 bottom-0.5 flex h-4 w-4 items-center justify-center rounded-md shadow-2xs ${
+                className={`absolute right-0.5 bottom-0.5 z-10 flex h-4 w-4 items-center justify-center rounded-md shadow-2xs ${
                   selectedCategory === 'all' && selectedDealFilter === 'all'
                     ? 'bg-[#F85606] text-white'
                     : 'bg-slate-900/85 text-white'
@@ -1866,38 +2974,40 @@ export default function App() {
                 {catalog.length} Products
               </p>
             </div>
-          </motion.button>
+          </button>
 
-          {/* 6 Main Product Departments with Illustrative Product Thumbnails + Corner Icon Badges */}
+          {/* 6 Main Product Departments with Bundled Product Thumbnails + Corner Icon Badges */}
           {DEPARTMENTS.map((dept) => {
             const meta = DEPARTMENT_META[dept];
             const IconComponent = meta.icon;
             const deptProducts = catalog.filter((p) => p.category === dept);
             const deptCount = deptProducts.length;
-            const representativeThumb = deptProducts[0]?.imageUrl || meta.thumbnailUrl;
+            const representativeThumb = resolveAssetUrl(
+              meta.thumbnailUrl || deptProducts[0]?.imageUrl
+            );
             const isSelected = selectedCategory === dept;
 
             return (
-              <motion.button
+              <button
                 key={dept}
-                whileHover={{ y: -2 }}
-                whileTap={{ scale: 0.98 }}
                 type="button"
                 onClick={() => setSelectedCategory(dept)}
-                className={`group flex min-w-[192px] shrink-0 snap-start items-center gap-3 rounded-xl border p-2 text-left transition-all ${
+                className={`group flex min-w-[188px] shrink-0 snap-start items-center gap-3 rounded-xl border p-2 text-left transition-all ${
                   isSelected
                     ? 'border-[#F85606] bg-[#FFF3EB] text-[#F85606] shadow-2xs ring-1 ring-[#F85606]/30'
                     : 'border-slate-200 bg-slate-50/70 text-slate-800 hover:border-orange-300 hover:bg-white'
                 }`}
               >
-                <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-xl border border-slate-200/80 bg-white shadow-2xs">
-                  <SmartImage
+                <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-xl border border-slate-200/80 bg-slate-100 shadow-2xs">
+                  <img
                     src={representativeThumb}
                     alt={meta.shortLabel}
+                    loading="eager"
+                    decoding="async"
                     className="h-full w-full object-cover"
                   />
                   <span
-                    className={`absolute right-0.5 bottom-0.5 flex h-4 w-4 items-center justify-center rounded-md bg-gradient-to-br ${meta.accentColor} text-white shadow-2xs`}
+                    className={`absolute right-0.5 bottom-0.5 z-10 flex h-4 w-4 items-center justify-center rounded-md bg-gradient-to-br ${meta.accentColor} text-white shadow-2xs`}
                   >
                     <IconComponent className="h-2.5 w-2.5" />
                   </span>
@@ -1911,32 +3021,34 @@ export default function App() {
                     {deptCount} Items
                   </p>
                 </div>
-              </motion.button>
+              </button>
             );
           })}
 
-          {/* Extra Scrollable Deal Channels in the Same Horizontal Row with Illustrative Thumbnails */}
-          <motion.button
-            whileHover={{ y: -2 }}
-            whileTap={{ scale: 0.98 }}
+          {/* Extra Scrollable Deal Channels in the Same Horizontal Row */}
+          <button
             type="button"
             onClick={() => {
               setSelectedCategory('all');
               setSelectedDealFilter('flash_sale');
             }}
-            className={`group flex min-w-[188px] shrink-0 snap-start items-center gap-3 rounded-xl border p-2 text-left transition-all ${
+            className={`group flex min-w-[184px] shrink-0 snap-start items-center gap-3 rounded-xl border p-2 text-left transition-all ${
               selectedDealFilter === 'flash_sale'
                 ? 'border-[#F85606] bg-[#FFF3EB] text-[#F85606] shadow-2xs ring-1 ring-[#F85606]/30'
                 : 'border-slate-200 bg-slate-50/70 text-slate-800 hover:border-orange-300 hover:bg-white'
             }`}
           >
-            <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-xl border border-orange-200 bg-white shadow-2xs">
-              <SmartImage
-                src="/src/assets/images/promo_poster_mega_sale_1794319674629.jpg"
+            <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-xl border border-orange-200 bg-slate-100 shadow-2xs">
+              <img
+                src={resolveAssetUrl(
+                  '/src/assets/images/promo_poster_mega_sale_1794319674629.jpg'
+                )}
                 alt="Flash Sale"
+                loading="eager"
+                decoding="async"
                 className="h-full w-full object-cover"
               />
-              <span className="absolute right-0.5 bottom-0.5 flex h-4 w-4 items-center justify-center rounded-md bg-[#F85606] text-white shadow-2xs">
+              <span className="absolute right-0.5 bottom-0.5 z-10 flex h-4 w-4 items-center justify-center rounded-md bg-[#F85606] text-white shadow-2xs">
                 <Zap className="h-2.5 w-2.5" />
               </span>
             </div>
@@ -1949,29 +3061,31 @@ export default function App() {
                 Daily SuperDeals
               </p>
             </div>
-          </motion.button>
+          </button>
 
-          <motion.button
-            whileHover={{ y: -2 }}
-            whileTap={{ scale: 0.98 }}
+          <button
             type="button"
             onClick={() => {
               setSelectedCategory('all');
               setSelectedDealFilter('new_user');
             }}
-            className={`group flex min-w-[188px] shrink-0 snap-start items-center gap-3 rounded-xl border p-2 text-left transition-all ${
+            className={`group flex min-w-[184px] shrink-0 snap-start items-center gap-3 rounded-xl border p-2 text-left transition-all ${
               selectedDealFilter === 'new_user'
                 ? 'border-[#F85606] bg-[#FFF3EB] text-[#F85606] shadow-2xs ring-1 ring-[#F85606]/30'
                 : 'border-slate-200 bg-slate-50/70 text-slate-800 hover:border-orange-300 hover:bg-white'
             }`}
           >
-            <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-xl border border-orange-200 bg-white shadow-2xs">
-              <SmartImage
-                src="/src/assets/images/promo_poster_flash_festival_1794319675114.jpg"
+            <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-xl border border-orange-200 bg-slate-100 shadow-2xs">
+              <img
+                src={resolveAssetUrl(
+                  '/src/assets/images/promo_poster_flash_festival_1794319675114.jpg'
+                )}
                 alt="New User Zone"
+                loading="eager"
+                decoding="async"
                 className="h-full w-full object-cover"
               />
-              <span className="absolute right-0.5 bottom-0.5 flex h-4 w-4 items-center justify-center rounded-md bg-[#F85606] text-white shadow-2xs">
+              <span className="absolute right-0.5 bottom-0.5 z-10 flex h-4 w-4 items-center justify-center rounded-md bg-[#F85606] text-white shadow-2xs">
                 <Tag className="h-2.5 w-2.5" />
               </span>
             </div>
@@ -1984,29 +3098,31 @@ export default function App() {
                 Up to 65% Off
               </p>
             </div>
-          </motion.button>
+          </button>
 
-          <motion.button
-            whileHover={{ y: -2 }}
-            whileTap={{ scale: 0.98 }}
+          <button
             type="button"
             onClick={() => {
               setSelectedCategory('all');
               setSelectedDealFilter('choice_bundle');
             }}
-            className={`group flex min-w-[188px] shrink-0 snap-start items-center gap-3 rounded-xl border p-2 text-left transition-all ${
+            className={`group flex min-w-[184px] shrink-0 snap-start items-center gap-3 rounded-xl border p-2 text-left transition-all ${
               selectedDealFilter === 'choice_bundle'
                 ? 'border-[#F85606] bg-[#FFF3EB] text-[#F85606] shadow-2xs ring-1 ring-[#F85606]/30'
                 : 'border-slate-200 bg-slate-50/70 text-slate-800 hover:border-orange-300 hover:bg-white'
             }`}
           >
-            <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-xl border border-emerald-200 bg-white shadow-2xs">
-              <SmartImage
-                src="/src/assets/images/promo_poster_home_lifestyle_1794319676096.jpg"
+            <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-xl border border-emerald-200 bg-slate-100 shadow-2xs">
+              <img
+                src={resolveAssetUrl(
+                  '/src/assets/images/promo_poster_home_lifestyle_1794319676096.jpg'
+                )}
                 alt="Choice Bundles"
+                loading="eager"
+                decoding="async"
                 className="h-full w-full object-cover"
               />
-              <span className="absolute right-0.5 bottom-0.5 flex h-4 w-4 items-center justify-center rounded-md bg-emerald-600 text-white shadow-2xs">
+              <span className="absolute right-0.5 bottom-0.5 z-10 flex h-4 w-4 items-center justify-center rounded-md bg-emerald-600 text-white shadow-2xs">
                 <ShieldCheck className="h-2.5 w-2.5" />
               </span>
             </div>
@@ -2019,26 +3135,28 @@ export default function App() {
                 Free Delivery
               </p>
             </div>
-          </motion.button>
+          </button>
 
-          <motion.button
-            whileHover={{ y: -2 }}
-            whileTap={{ scale: 0.98 }}
+          <button
             type="button"
             onClick={() => handleSelectPricePreset('under_10k')}
-            className={`group flex min-w-[188px] shrink-0 snap-start items-center gap-3 rounded-xl border p-2 text-left transition-all ${
+            className={`group flex min-w-[184px] shrink-0 snap-start items-center gap-3 rounded-xl border p-2 text-left transition-all ${
               pricePreset === 'under_10k'
                 ? 'border-[#F85606] bg-[#FFF3EB] text-[#F85606] shadow-2xs ring-1 ring-[#F85606]/30'
                 : 'border-slate-200 bg-slate-50/70 text-slate-800 hover:border-orange-300 hover:bg-white'
             }`}
           >
-            <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-xl border border-amber-200 bg-white shadow-2xs">
-              <SmartImage
-                src="/src/assets/images/product_powerbank_charger_1794123346828.jpg"
+            <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-xl border border-amber-200 bg-slate-100 shadow-2xs">
+              <img
+                src={resolveAssetUrl(
+                  '/src/assets/images/product_powerbank_charger_1794123346828.jpg'
+                )}
                 alt="Under Rs. 10,000"
+                loading="eager"
+                decoding="async"
                 className="h-full w-full object-cover"
               />
-              <span className="absolute right-0.5 bottom-0.5 flex h-4 w-4 items-center justify-center rounded-md bg-amber-500 text-white shadow-2xs">
+              <span className="absolute right-0.5 bottom-0.5 z-10 flex h-4 w-4 items-center justify-center rounded-md bg-amber-500 text-white shadow-2xs">
                 <Star className="h-2.5 w-2.5" />
               </span>
             </div>
@@ -2051,7 +3169,7 @@ export default function App() {
                 Budget Savers
               </p>
             </div>
-          </motion.button>
+          </button>
         </div>
       </div>
     </div>
@@ -2128,19 +3246,16 @@ export default function App() {
             }`}
           />
 
-          {/* TOP-LEFT CORNER: IN STOCK (Green) / OUT OF STOCK (Red) Badge */}
-          <button
-            type="button"
-            onClick={(e) => handleToggleProductStock(product.id, e)}
-            title="Click to toggle In Stock (Green) / Out of Stock (Red)"
-            className={`absolute top-2 left-2 z-10 inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[10px] font-extrabold tracking-wide text-white uppercase shadow-sm transition-colors ${
+          {/* TOP-LEFT CORNER: Read-Only IN STOCK (Green) / OUT OF STOCK (Red) Status Badge (Admin toggles stock exclusively inside Admin Dashboard) */}
+          <span
+            className={`absolute top-2 left-2 z-10 inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[10px] font-extrabold tracking-wide text-white uppercase shadow-sm ${
               isInStock
-                ? 'border border-emerald-300/70 bg-emerald-600 hover:bg-emerald-700'
-                : 'border border-red-300/70 bg-red-600 hover:bg-red-700'
+                ? 'border border-emerald-300/70 bg-emerald-600'
+                : 'border border-red-300/70 bg-red-600'
             }`}
           >
             <span>{isInStock ? t.inStock : t.outOfStock}</span>
-          </button>
+          </span>
 
           {/* BOTTOM-LEFT: Discount Percentage Badge */}
           <div className="absolute bottom-2 left-2 rounded-md bg-[#F85606] px-2 py-0.5 font-mono text-[11px] font-extrabold text-white shadow-2xs">
@@ -2238,7 +3353,61 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#F5F5F7] pb-24 text-slate-900">
+      {/* Daraz / AliExpress Style Orange Top Search Loading Bar */}
+      <AnimatePresence>
+        {isSearchLoading && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.16 }}
+            aria-label="Loading search results"
+            className="pointer-events-none fixed top-0 right-0 left-0 z-[120] h-[4px] overflow-hidden bg-orange-100/80"
+          >
+            <motion.div
+              initial={{ width: '0%' }}
+              animate={{ width: `${searchLoadProgress}%` }}
+              transition={{ duration: 0.22, ease: 'easeOut' }}
+              className="relative h-full bg-gradient-to-r from-[#F85606] via-[#FF7A00] to-[#FF9D2E] shadow-[0_0_12px_rgba(248,86,6,0.75)]"
+            >
+              <span className="absolute top-0 right-0 h-full w-10 bg-gradient-to-r from-transparent to-white/60" />
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       <OfflineIndicator />
+
+      {/* Daraz-Style Black Transparent "Added to Cart" Popup (Displayed for 1.5s) */}
+      <AnimatePresence>
+        {addedToCartPopup && (
+          <div
+            role="status"
+            aria-live="polite"
+            className="pointer-events-none fixed inset-0 z-[140] flex items-center justify-center px-6"
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.94 }}
+              transition={{ duration: 0.16, ease: 'easeOut' }}
+              className="flex max-w-[260px] flex-col items-center gap-2 rounded-2xl border border-white/10 bg-black/80 px-7 py-5 text-center text-white shadow-2xl backdrop-blur-xs"
+            >
+              <div className="flex h-11 w-11 items-center justify-center rounded-full bg-white/15">
+                <Check className="h-6 w-6 stroke-[2.8] text-white" />
+              </div>
+              <p className="text-sm font-extrabold tracking-tight text-white">
+                Added to Cart
+              </p>
+              <p className="line-clamp-1 max-w-[210px] text-[11px] font-medium text-white/75">
+                {addedToCartPopup.qty > 1 ? `${addedToCartPopup.qty}x ` : ''}
+                {addedToCartPopup.title}
+              </p>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
       {/* Dismissible Notification Toast */}
       <AnimatePresence>
         {toastBanner && (
@@ -2259,315 +3428,483 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      {/* Top Navigation Bar with Official BuyKit Logo */}
-      <header className="sticky top-0 z-40 flex items-center justify-between gap-2 border-b border-slate-200 bg-white px-3 py-2.5 shadow-2xs sm:gap-5 sm:px-6 lg:px-10">
-        {/* Zone 1: Official BuyKit Logo + Wordmark */}
-        <a
-          href="#top"
-          onClick={(e) => {
-            e.preventDefault();
-            setActiveBottomTab('home');
-            window.scrollTo({ top: 0, behavior: 'smooth' });
-          }}
-          className="flex min-w-0 items-center gap-2 whitespace-nowrap shrink-0 sm:gap-2.5"
-        >
-          <BuyKitLogoBadge size="md" />
-          <div className="flex flex-col">
-            <span className="font-display text-lg font-extrabold tracking-tight text-slate-950 sm:text-2xl">
-              buy<span className="text-[#F85606]">kit</span>{' '}
-              <span className="text-xs font-semibold text-slate-500 sm:text-sm">with Pramu</span>
-            </span>
-          </div>
-        </a>
-
-        {/* Zone 2: 5 concise single-line text navigation links */}
-        <nav className="hidden items-center gap-7 text-sm font-medium text-slate-700 md:flex">
-          <button
-            type="button"
-            onClick={() => {
+      {/* Top Navigation Bar with Official BuyKit Logo (Hidden on Search Page so Search Bar moves to top) */}
+      {activeBottomTab !== 'search' && (
+        <header className="sticky top-0 z-40 flex items-center justify-between gap-2 border-b border-slate-200 bg-white px-3 py-2.5 shadow-2xs sm:gap-5 sm:px-6 lg:px-10">
+          {/* Zone 1: Official BuyKit Logo + Wordmark */}
+          <a
+            href="#top"
+            onClick={(e) => {
+              e.preventDefault();
               setActiveBottomTab('home');
-              setSelectedDealFilter('flash_sale');
-            }}
-            className="transition-colors hover:text-[#F85606] hover:underline whitespace-nowrap shrink-0"
-          >
-            Flash Sale
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setActiveBottomTab('shop');
-              setSelectedDealFilter('all');
-            }}
-            className="transition-colors hover:text-[#F85606] hover:underline whitespace-nowrap shrink-0"
-          >
-            {t.allProducts} ({catalog.length})
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveBottomTab('buykit')}
-            className="transition-colors hover:text-[#F85606] hover:underline whitespace-nowrap shrink-0"
-          >
-            {t.buykitHub}
-          </button>
-          <button
-            type="button"
-            onClick={() => setIsCompareModalOpen(true)}
-            className="transition-colors hover:text-[#F85606] hover:underline whitespace-nowrap shrink-0"
-          >
-            {t.compare} ({compareIds.length}/{MAX_COMPARE_PRODUCTS})
-          </button>
-          <button
-            type="button"
-            onClick={() => setIsPickupMapOpen(true)}
-            className="transition-colors hover:text-[#F85606] hover:underline whitespace-nowrap shrink-0"
-          >
-            {t.pickupHubs}
-          </button>
-        </nav>
-
-        {/* Zone 3: Top-Right Country Flag + Language, Settings & Checkout / Login CTA */}
-        <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
-          <button
-            type="button"
-            onClick={() => openAccountSettings('country_language')}
-            title="Select Country (with Flag) & Language"
-            className="hidden items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-bold text-slate-700 transition-colors hover:border-[#F85606] hover:bg-[#FFF3EB] sm:inline-flex"
-          >
-            <img
-              src={activeCountryObj.flagUrl}
-              alt={activeCountryObj.name}
-              loading="lazy"
-              decoding="async"
-              referrerPolicy="no-referrer"
-              className="h-3.5 w-5 rounded-xs object-cover"
-            />
-            <span>{activeCountryObj.code}</span>
-            <span className="text-slate-300">|</span>
-            <span className="text-[#F85606]">{activeLanguageObj.nativeLabel}</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => openAccountSettings('profile')}
-            aria-label="Account Settings"
-            title="Account Settings: Profile, Address, Country, Language & Credit/Debit Cards"
-            className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-slate-50 p-2 text-slate-700 transition-colors hover:border-[#F85606] hover:bg-[#FFF3EB] hover:text-[#F85606]"
-          >
-            <Settings className="h-4 w-4" />
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              setActiveBottomTab('cart');
               window.scrollTo({ top: 0, behavior: 'smooth' });
             }}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-[#FFB800] px-3 py-2 text-xs font-extrabold text-slate-950 shadow-2xs transition-colors hover:bg-[#e5a600] whitespace-nowrap shrink-0"
+            className="flex min-w-0 items-center gap-2 whitespace-nowrap shrink-0 sm:gap-2.5"
           >
-            <ShoppingBag className="h-4 w-4 shrink-0" />
-            <span>{t.checkout} ({totalCartUnits})</span>
-          </button>
+            <BuyKitLogoBadge size="md" />
+            <div className="flex flex-col">
+              <span className="font-display text-lg font-extrabold tracking-tight text-slate-950 sm:text-2xl">
+                buy<span className="text-[#F85606]">kit</span>{' '}
+                <span className="text-xs font-semibold text-slate-500 sm:text-sm">with Pramu</span>
+              </span>
+            </div>
+          </a>
 
-          {currentUser ? (
-            <button
-              type="button"
-              onClick={() => setActiveBottomTab('account')}
-              className="hidden items-center gap-1.5 rounded-lg bg-[#F85606] px-3.5 py-2 text-xs font-semibold text-white transition-colors hover:bg-[#d94800] whitespace-nowrap shrink-0 md:inline-flex"
-            >
-              <UserIcon className="h-3.5 w-3.5" />
-              <span>{currentUser.displayName?.split(' ')[0] || t.account}</span>
-            </button>
-          ) : (
+          {/* Zone 2: Concise single-line text navigation links */}
+          <nav className="hidden items-center gap-7 text-sm font-medium text-slate-700 md:flex">
             <button
               type="button"
               onClick={() => {
-                setPendingCartProduct(null);
-                setPendingBuyNowMode(false);
-                setIsAuthModalOpen(true);
+                setActiveBottomTab('home');
+                setSelectedDealFilter('flash_sale');
               }}
-              className="hidden items-center gap-1.5 rounded-lg bg-[#F85606] px-3.5 py-2 text-xs font-semibold text-white shadow-xs transition-colors hover:bg-[#d94800] whitespace-nowrap shrink-0 md:inline-flex"
+              className="transition-colors hover:text-[#F85606] hover:underline whitespace-nowrap shrink-0"
             >
-              <UserIcon className="h-3.5 w-3.5" />
-              <span>{t.signIn}</span>
+              Flash Sale
             </button>
-          )}
-        </div>
-      </header>
+            <button
+              type="button"
+              onClick={() => {
+                setActiveBottomTab('shop');
+                setSelectedDealFilter('all');
+              }}
+              className="transition-colors hover:text-[#F85606] hover:underline whitespace-nowrap shrink-0"
+            >
+              {t.allProducts} ({catalog.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsCompareModalOpen(true)}
+              className="transition-colors hover:text-[#F85606] hover:underline whitespace-nowrap shrink-0"
+            >
+              {t.compare} ({compareIds.length}/{MAX_COMPARE_PRODUCTS})
+            </button>
+          </nav>
 
-      {/* Main Wide Daraz / AliExpress Storefront Container */}
-      <main id="top" className="mx-auto max-w-[1540px] px-3 py-5 sm:px-6 lg:px-8">
-        {/* Animated Bottom Notification Popup in English for App Download */}
-        <PWAInstallButton variant="floating" searchQuery={searchQuery} />
-
-        {/* Global Search Bar + Tools + Filters (Hidden on Account & Cart/Checkout Tabs) */}
-        {activeBottomTab !== 'account' && activeBottomTab !== 'cart' && (
-          <div className="mb-4 rounded-xl border border-slate-200 bg-white p-3.5 shadow-2xs">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            <div className="flex flex-1 items-center overflow-hidden rounded-lg border-2 border-[#F85606] bg-white">
-              <Search className="ml-3.5 h-4 w-4 shrink-0 text-slate-400" />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => {
-                  setSearchQuery(e.target.value);
-                  if (activeBottomTab !== 'home' && activeBottomTab !== 'shop') {
-                    setActiveBottomTab('shop');
-                  }
-                }}
-                placeholder={t.searchPlaceholder}
-                className="w-full bg-transparent px-3 py-2 text-sm text-slate-900 focus:outline-none"
+          {/* Zone 3: Top-Right Country Flag + Language, Settings & Checkout / Login CTA */}
+          <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => openAccountSettings('country_language')}
+              title="Select Country (with Flag) & Language"
+              className="hidden items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-bold text-slate-700 transition-colors hover:border-[#F85606] hover:bg-[#FFF3EB] sm:inline-flex"
+            >
+              <img
+                src={activeCountryObj.flagUrl}
+                alt={activeCountryObj.name}
+                loading="lazy"
+                decoding="async"
+                referrerPolicy="no-referrer"
+                className="h-3.5 w-5 rounded-xs object-cover"
               />
-              {searchQuery && (
-                <button
-                  type="button"
-                  onClick={() => setSearchQuery('')}
-                  className="px-2 text-xs font-medium text-slate-400 hover:text-slate-700"
-                >
-                  {t.clearBtn}
-                </button>
-              )}
+              <span>{activeCountryObj.code}</span>
+              <span className="text-slate-300">|</span>
+              <span className="text-[#F85606]">{activeLanguageObj.nativeLabel}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => openAccountSettings('profile')}
+              aria-label="Account Settings"
+              title="Account Settings: Profile, Address, Country, Language & Credit/Debit Cards"
+              className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-slate-50 p-2 text-slate-700 transition-colors hover:border-[#F85606] hover:bg-[#FFF3EB] hover:text-[#F85606]"
+            >
+              <Settings className="h-4 w-4" />
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setActiveBottomTab('cart');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-[#FFB800] px-3 py-2 text-xs font-extrabold text-slate-950 shadow-2xs transition-colors hover:bg-[#e5a600] whitespace-nowrap shrink-0"
+            >
+              <ShoppingBag className="h-4 w-4 shrink-0" />
+              <span>{t.cart} ({totalCartUnits})</span>
+            </button>
+
+            {currentUser ? (
+              <button
+                type="button"
+                onClick={() => setActiveBottomTab('account')}
+                className="hidden items-center gap-1.5 rounded-lg bg-[#F85606] px-3.5 py-2 text-xs font-semibold text-white transition-colors hover:bg-[#d94800] whitespace-nowrap shrink-0 md:inline-flex"
+              >
+                <UserIcon className="h-3.5 w-3.5" />
+                <span>{currentUser.displayName?.split(' ')[0] || t.account}</span>
+              </button>
+            ) : (
               <button
                 type="button"
                 onClick={() => {
-                  const catalogEl = document.getElementById('catalog');
-                  if (catalogEl) {
-                    catalogEl.scrollIntoView({ behavior: 'smooth' });
-                  }
+                  setPendingCartProduct(null);
+                  setPendingBuyNowMode(false);
+                  setIsAuthModalOpen(true);
                 }}
-                className="bg-[#F85606] px-5 py-2 text-xs font-semibold text-white transition-colors hover:bg-[#d94800] whitespace-nowrap shrink-0"
+                className="hidden items-center gap-1.5 rounded-lg bg-[#F85606] px-3.5 py-2 text-xs font-semibold text-white shadow-xs transition-colors hover:bg-[#d94800] whitespace-nowrap shrink-0 md:inline-flex"
               >
-                {t.searchBtn}
+                <UserIcon className="h-3.5 w-3.5" />
+                <span>{t.signIn}</span>
               </button>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2 text-xs">
-              <PWAInstallButton variant="header" />
-
-              <button
-                type="button"
-                onClick={() => setIsPickupMapOpen(true)}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 font-medium text-slate-700 hover:bg-slate-100 whitespace-nowrap shrink-0"
-              >
-                <MapPin className="h-3.5 w-3.5 text-[#F85606]" />
-                <span>Hub: {selectedHubName}</span>
-              </button>
-
-              {currentUser && (
-                <button
-                  type="button"
-                  onClick={() => signOutAccount()}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900 whitespace-nowrap shrink-0"
-                >
-                  <LogOut className="h-3.5 w-3.5" />
-                  <span>{t.logout}</span>
-                </button>
-              )}
-            </div>
+            )}
           </div>
+        </header>
+      )}
 
-          {/* Price Filter Button, Stock Availability Filters & Quick Search Keywords right below the Search Bar */}
-          <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-2.5">
-            {/* Left: Price Filter Toggle Button + In Stock (Green) / Out of Stock (Red) Filter Buttons */}
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setIsPriceFilterOpen((prev) => !prev)}
-                className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-bold transition-all whitespace-nowrap shrink-0 ${
-                  isPriceFilterOpen || hasActivePriceFilter
-                    ? 'border-[#F85606] bg-[#F85606] text-white shadow-2xs'
-                    : 'border-orange-200 bg-[#FFF3EB] text-[#F85606] hover:bg-orange-100'
+      {/* Main Wide Daraz / AliExpress Storefront Container */}
+      <main
+        id="top"
+        className={`mx-auto max-w-[1540px] ${
+          activeBottomTab === 'search'
+            ? 'px-0 pt-0 pb-4 sm:px-0'
+            : 'px-3 py-4 sm:px-6 lg:px-8'
+        }`}
+      >
+        {/* Animated Bottom Notification Popup in English for App Download */}
+        <PWAInstallButton variant="floating" searchQuery={searchQuery} />
+
+        {/* Global Search Bar + Icon-Only Filter Button (Pinned to Top on Search Page; Hidden on Account, Cart & Checkout Tabs) */}
+        {activeBottomTab !== 'account' &&
+          activeBottomTab !== 'cart' &&
+          activeBottomTab !== 'checkout' && (
+          <div
+            className={
+              activeBottomTab === 'search'
+                ? 'sticky top-0 z-40 mb-2.5 border-b border-slate-200 bg-white px-3 py-2 shadow-xs sm:px-6 lg:px-8'
+                : 'relative mb-4 rounded-xl border border-slate-200 bg-white p-3 shadow-2xs sm:p-3.5'
+            }
+          >
+            {/* Subtle inline orange loading indicator on the search bar */}
+            {isSearchLoading && (
+              <div
+                className={`pointer-events-none absolute top-0 right-0 left-0 h-[3px] overflow-hidden bg-orange-100 ${
+                  activeBottomTab === 'search' ? '' : 'rounded-t-xl'
                 }`}
               >
-                <SlidersHorizontal className="h-3.5 w-3.5" />
-                <span>{activePriceFilterText}</span>
-                <ChevronDown
-                  className={`h-3.5 w-3.5 transition-transform duration-200 ${
-                    isPriceFilterOpen ? 'rotate-180' : ''
-                  }`}
+                <div
+                  style={{ width: `${searchLoadProgress}%` }}
+                  className="h-full bg-gradient-to-r from-[#F85606] to-[#FF8A00] transition-all duration-200"
                 />
-              </button>
+              </div>
+            )}
 
-              {/* In Stock (Green) & Out of Stock (Red) Quick Filter Buttons */}
-              <button
-                type="button"
-                onClick={() =>
-                  setStockFilter((prev) => (prev === 'in_stock' ? 'all' : 'in_stock'))
-                }
-                className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-bold transition-all whitespace-nowrap shrink-0 ${
-                  stockFilter === 'in_stock'
-                    ? 'border-emerald-600 bg-emerald-600 text-white shadow-2xs'
-                    : 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
-                }`}
-              >
-                <span>
-                  {t.inStock} ({catalog.filter((p) => p.stockRemaining > 0).length})
-                </span>
-              </button>
+            <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+              {/* Full-Width Search Bar + Icon-Only Price Filter Button */}
+              <div className="flex w-full min-w-0 flex-1 flex-nowrap items-center gap-2">
+                {/* Back Button pinned on left when in Search Results Mode */}
+                {activeBottomTab === 'search' && (
+                  <button
+                    type="button"
+                    onClick={handleExitSearchPage}
+                    aria-label="Back to Home"
+                    title="Back to Home"
+                    className="inline-flex h-[40px] w-[38px] shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-700 transition-colors hover:border-[#F85606] hover:bg-[#FFF3EB] hover:text-[#F85606]"
+                  >
+                    <ChevronLeft className="h-5 w-5" />
+                  </button>
+                )}
 
-              <button
-                type="button"
-                onClick={() =>
-                  setStockFilter((prev) =>
-                    prev === 'out_of_stock' ? 'all' : 'out_of_stock'
-                  )
-                }
-                className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-bold transition-all whitespace-nowrap shrink-0 ${
-                  stockFilter === 'out_of_stock'
-                    ? 'border-red-600 bg-red-600 text-white shadow-2xs'
-                    : 'border-red-200 bg-red-50 text-red-700 hover:bg-red-100'
-                }`}
-              >
-                <span>
-                  {t.outOfStock} ({catalog.filter((p) => p.stockRemaining <= 0).length})
-                </span>
-              </button>
+                <div ref={searchBoxContainerRef} className="relative min-w-0 flex-1">
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      handleExecuteSearch();
+                    }}
+                    className="flex w-full items-center overflow-hidden rounded-lg border-2 border-[#F85606] bg-white"
+                  >
+                    <Search className="ml-3 h-4 w-4 shrink-0 text-slate-400" />
+                    <input
+                      type="search"
+                      enterKeyHint="search"
+                      value={searchQuery}
+                      onFocus={() => setIsSearchDropdownOpen(true)}
+                      onChange={(e) => {
+                        const nextVal = e.target.value;
+                        setSearchQuery(nextVal);
+                        setIsSearchDropdownOpen(true);
+                        if (activeBottomTab === 'search') {
+                          setSubmittedSearchQuery(nextVal);
+                        }
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Escape') {
+                          setIsSearchDropdownOpen(false);
+                        }
+                      }}
+                      placeholder={t.searchPlaceholder}
+                      className="min-w-0 flex-1 bg-transparent px-2.5 py-2 text-sm text-slate-900 focus:outline-none"
+                    />
+                    {searchQuery && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSearchQuery('');
+                          setSubmittedSearchQuery('');
+                          setIsSearchDropdownOpen(false);
+                          if (activeBottomTab === 'search') {
+                            handleExitSearchPage();
+                          }
+                        }}
+                        aria-label={t.clearBtn}
+                        className="px-2 text-slate-400 hover:text-slate-700"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    )}
+                    <button
+                      type="submit"
+                      className="bg-[#F85606] px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-[#d94800] whitespace-nowrap shrink-0 sm:px-5"
+                    >
+                      {t.searchBtn}
+                    </button>
+                  </form>
 
-              <button
-                type="button"
-                onClick={() => setIsCompareModalOpen(true)}
-                className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-bold transition-all whitespace-nowrap shrink-0 ${
-                  compareIds.length > 0
-                    ? 'border-[#F85606] bg-[#F85606] text-white shadow-2xs'
-                    : 'border-slate-200 bg-slate-50 text-slate-700 hover:border-orange-300 hover:bg-[#FFF3EB] hover:text-[#F85606]'
-                }`}
-              >
-                <Scale className="h-3.5 w-3.5" />
-                <span>
-                  {t.compare} ({compareIds.length}/{MAX_COMPARE_PRODUCTS})
-                </span>
-              </button>
+                  {/* Daraz / AliExpress Live Search Suggestions, Recent History & Popular Searches Dropdown */}
+                  {isSearchDropdownOpen && (
+                    <div className="absolute right-0 left-0 z-50 mt-1.5 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
+                      {searchQuery.trim().length > 0 ? (
+                        <div className="divide-y divide-slate-100">
+                          {/* Direct Search Page Action Row */}
+                          <button
+                            type="button"
+                            onClick={() => handleExecuteSearch(searchQuery)}
+                            className="flex w-full items-center justify-between gap-2 bg-[#FFF8F4] px-4 py-2.5 text-left text-xs font-bold text-[#F85606] hover:bg-orange-50"
+                          >
+                            <span className="inline-flex items-center gap-2 truncate">
+                              <Search className="h-3.5 w-3.5 shrink-0" />
+                              <span className="truncate">
+                                Search all products for &ldquo;{searchQuery.trim()}&rdquo;
+                              </span>
+                            </span>
+                            <span className="shrink-0 rounded bg-[#F85606] px-2 py-0.5 text-[10px] font-extrabold text-white">
+                              Enter ↵
+                            </span>
+                          </button>
 
-              {hasActiveFilters && (
+                          {/* Live Matching Product Previews */}
+                          {liveSearchSuggestions.length > 0 ? (
+                            <div className="max-h-72 overflow-y-auto py-1">
+                              {liveSearchSuggestions.map((prod) => (
+                                <button
+                                  key={prod.id}
+                                  type="button"
+                                  onClick={() => {
+                                    setIsSearchDropdownOpen(false);
+                                    triggerOrangeSearchLoading(() => openProductDetails(prod));
+                                  }}
+                                  className="flex w-full items-center gap-3 px-4 py-2 text-left transition-colors hover:bg-slate-50"
+                                >
+                                  <SmartImage
+                                    src={prod.imageUrl}
+                                    alt={prod.title}
+                                    className="h-10 w-10 shrink-0 rounded-lg border border-slate-200 object-cover"
+                                  />
+                                  <div className="min-w-0 flex-1">
+                                    <p className="truncate text-xs font-bold text-slate-900">
+                                      {prod.title}
+                                    </p>
+                                    <p className="truncate text-[11px] text-slate-500">
+                                      {prod.category} · {prod.storeName}
+                                    </p>
+                                  </div>
+                                  <div className="shrink-0 text-right font-mono">
+                                    <p className="text-xs font-extrabold text-[#F85606]">
+                                      {formatLKR(getEffectivePrice(prod))}
+                                    </p>
+                                    <p className="text-[10px] text-slate-400">
+                                      ★ {prod.rating.toFixed(1)}
+                                    </p>
+                                  </div>
+                                </button>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="px-4 py-3 text-xs text-slate-500">
+                              Press <strong>Search</strong> or <strong>Enter</strong> to view full search results for &ldquo;{searchQuery.trim()}&rdquo;.
+                            </div>
+                          )}
+
+                          {/* Popular Searches Footer while Typing */}
+                          <div className="bg-slate-50/80 px-4 py-2.5">
+                            <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                              <span className="font-bold text-slate-400">{t.popularSearches}</span>
+                              {QUICK_SEARCH_TAGS.map((tag) => (
+                                <button
+                                  key={tag}
+                                  type="button"
+                                  onClick={() => handleExecuteSearch(tag)}
+                                  className="rounded-md border border-orange-200 bg-white px-2 py-0.5 font-semibold text-[#F85606] transition-colors hover:bg-[#F85606] hover:text-white"
+                                >
+                                  {tag}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="space-y-3 p-3.5">
+                          {recentSearches.length > 0 && (
+                            <div>
+                              <div className="mb-1.5 flex items-center justify-between">
+                                <span className="text-[11px] font-bold tracking-wider text-slate-400 uppercase">
+                                  Recent Searches
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setRecentSearches([]);
+                                    try {
+                                      window.localStorage.removeItem('buykit_recent_searches_v1');
+                                    } catch {
+                                      // Ignore
+                                    }
+                                  }}
+                                  className="text-[11px] font-semibold text-slate-400 hover:text-red-600"
+                                >
+                                  Clear
+                                </button>
+                              </div>
+                              <div className="flex flex-wrap gap-1.5">
+                                {recentSearches.map((recent) => (
+                                  <span
+                                    key={recent}
+                                    className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700"
+                                  >
+                                    <button
+                                      type="button"
+                                      onClick={() => handleExecuteSearch(recent)}
+                                      className="hover:text-[#F85606]"
+                                    >
+                                      {recent}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRemoveRecentSearch(recent)}
+                                      aria-label={`Remove ${recent}`}
+                                      className="text-slate-400 hover:text-red-500"
+                                    >
+                                      <X className="h-3 w-3" />
+                                    </button>
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          <div>
+                            <span className="mb-1.5 block text-[11px] font-bold tracking-wider text-slate-400 uppercase">
+                              {t.popularSearches}
+                            </span>
+                            <div className="flex flex-wrap gap-1.5">
+                              {QUICK_SEARCH_TAGS.map((tag) => (
+                                <button
+                                  key={tag}
+                                  type="button"
+                                  onClick={() => handleExecuteSearch(tag)}
+                                  className="rounded-lg border border-orange-200 bg-[#FFF8F4] px-2.5 py-1 text-xs font-semibold text-[#F85606] hover:bg-[#F85606] hover:text-white"
+                                >
+                                  {tag}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Icon-Only Price Filter Button Beside the Search Bar */}
                 <button
                   type="button"
-                  onClick={handleResetAllFilters}
-                  className="inline-flex items-center gap-1 rounded-lg border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-100 whitespace-nowrap shrink-0"
+                  onClick={() => setIsPriceFilterOpen((prev) => !prev)}
+                  aria-label={activePriceFilterText}
+                  title={activePriceFilterText}
+                  className={`relative inline-flex h-[40px] w-[40px] shrink-0 items-center justify-center rounded-lg border-2 transition-all ${
+                    isPriceFilterOpen || hasActivePriceFilter
+                      ? 'border-[#F85606] bg-[#F85606] text-white shadow-2xs'
+                      : 'border-orange-200 bg-[#FFF3EB] text-[#F85606] hover:border-[#F85606] hover:bg-orange-100'
+                  }`}
                 >
-                  <RotateCcw className="h-3.5 w-3.5" />
-                  <span>{t.resetFilters}</span>
+                  <SlidersHorizontal className="h-4 w-4" />
+                  {hasActivePriceFilter && !isPriceFilterOpen && (
+                    <span className="absolute -top-1 -right-1 h-2.5 w-2.5 rounded-full border-2 border-white bg-emerald-500" />
+                  )}
                 </button>
+
+                {hasActiveFilters && (
+                  <button
+                    type="button"
+                    onClick={handleResetAllFilters}
+                    aria-label={t.resetFilters}
+                    title={t.resetFilters}
+                    className="inline-flex h-[40px] w-[40px] shrink-0 items-center justify-center rounded-lg border border-red-200 bg-red-50 text-red-700 transition-colors hover:bg-red-100"
+                  >
+                    <RotateCcw className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
+
+              {/* Quick Actions (Hidden on Search Results Page so Search Bar gets full width & clean focus) */}
+              {activeBottomTab !== 'search' && (
+                <div className="flex flex-wrap items-center gap-2 text-xs shrink-0">
+                  <PWAInstallButton variant="header" />
+
+                  {isCurrentUserAdmin && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAdminEditingProduct(null);
+                        setAdminDashboardTab('products');
+                        setIsAdminStudioOpen(true);
+                      }}
+                      className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-amber-400/80 bg-slate-950 px-3 py-2 font-extrabold whitespace-nowrap text-amber-300 shadow-xs transition-colors hover:bg-[#F85606] hover:text-white"
+                    >
+                      <ShieldCheck className="h-3.5 w-3.5" />
+                      <span>Admin Dashboard</span>
+                      {unreadAdminNotificationCount > 0 && (
+                        <span className="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-red-600 px-1 font-mono text-[10px] font-extrabold text-white">
+                          {unreadAdminNotificationCount > 99 ? '99+' : unreadAdminNotificationCount}
+                        </span>
+                      )}
+                    </button>
+                  )}
+
+                  {currentUser && (
+                    <button
+                      type="button"
+                      onClick={() => signOutAccount()}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900 whitespace-nowrap shrink-0"
+                    >
+                      <LogOut className="h-3.5 w-3.5" />
+                      <span>{t.logout}</span>
+                    </button>
+                  )}
+                </div>
               )}
             </div>
 
-            {/* Right: Popular Searches */}
-            <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
-              <span className="font-semibold text-slate-400">{t.popularSearches}</span>
-              {QUICK_SEARCH_TAGS.map((tag) => (
-                <button
-                  key={tag}
-                  type="button"
-                  onClick={() => setSearchQuery(tag === searchQuery ? '' : tag)}
-                  className={`rounded-md px-2 py-0.5 font-medium transition-colors whitespace-nowrap shrink-0 ${
-                    searchQuery.toLowerCase() === tag.toLowerCase()
-                      ? 'bg-[#F85606] text-white'
-                      : 'bg-slate-100 text-slate-600 hover:bg-orange-50 hover:text-[#F85606]'
-                  }`}
-                >
-                  {tag}
-                </button>
-              ))}
-            </div>
-          </div>
+            {/* Popular Searches Strip — Shown ONLY while actively searching (compact single-line scrollable strip on Search Page) */}
+            {(activeBottomTab === 'search' || searchQuery.trim().length > 0) &&
+              !isSearchDropdownOpen && (
+                <div className="mt-2 flex items-center gap-1.5 overflow-x-auto border-t border-slate-100 pt-2 text-[11px]">
+                  <span className="shrink-0 font-semibold text-slate-400">{t.popularSearches}</span>
+                  {QUICK_SEARCH_TAGS.map((tag) => (
+                    <button
+                      key={tag}
+                      type="button"
+                      onClick={() => handleExecuteSearch(tag)}
+                      className={`rounded-md px-2.5 py-0.5 font-medium transition-colors whitespace-nowrap shrink-0 ${
+                        effectiveSearchTerm.toLowerCase() === tag.toLowerCase()
+                          ? 'bg-[#F85606] text-white'
+                          : 'bg-slate-100 text-slate-600 hover:bg-orange-50 hover:text-[#F85606]'
+                      }`}
+                    >
+                      {tag}
+                    </button>
+                  ))}
+                </div>
+              )}
 
           {/* Collapsible LKR Price Filter & Sort Panel right under the Price Filter button */}
           <AnimatePresence>
@@ -2687,6 +4024,177 @@ export default function App() {
             )}
           </AnimatePresence>
           </div>
+        )}
+
+        {/* =========================================================
+            DEDICATED DARAZ / ALIEXPRESS SEARCH RESULTS PAGE
+            (Maximized vertical space directly below sticky top Search Bar)
+           ========================================================= */}
+        {activeBottomTab === 'search' && (
+          <section className="space-y-3 px-3 sm:px-6 lg:px-8">
+            {/* Compact Sort, Result Count & Category Bar */}
+            <div className="rounded-xl border border-slate-200 bg-white px-3 py-2.5 shadow-2xs sm:px-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex min-w-0 items-center gap-2">
+                  <h1 className="truncate font-display text-sm font-extrabold text-slate-950 sm:text-base">
+                    {effectiveSearchTerm ? `"${effectiveSearchTerm}"` : 'All Search Results'}
+                  </h1>
+                  <span className="shrink-0 rounded-md bg-[#FFF3EB] px-2 py-0.5 font-mono text-[11px] font-extrabold text-[#F85606]">
+                    {filteredProducts.length}{' '}
+                    {filteredProducts.length === 1 ? 'item' : 'items'}
+                  </span>
+                </div>
+
+                {/* Compact Daraz / AliExpress Sort Bar */}
+                <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
+                  {(
+                    [
+                      { id: 'popular', label: 'Best Match' },
+                      { id: 'price_asc', label: 'Price ↑' },
+                      { id: 'price_desc', label: 'Price ↓' },
+                      { id: 'discount', label: 'Top Discount' },
+                      { id: 'rating', label: 'Top Rated ★' },
+                    ] as const
+                  ).map((opt) => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => setSortBy(opt.id)}
+                      className={`rounded-lg border px-2.5 py-1 text-[11px] font-bold transition-colors whitespace-nowrap shrink-0 ${
+                        sortBy === opt.id
+                          ? 'border-[#F85606] bg-[#F85606] text-white'
+                          : 'border-slate-200 bg-slate-50 text-slate-700 hover:border-orange-300 hover:text-[#F85606]'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+
+                  <button
+                    type="button"
+                    onClick={() => setSearchFreeShippingOnly((prev) => !prev)}
+                    className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-bold transition-colors whitespace-nowrap shrink-0 ${
+                      searchFreeShippingOnly
+                        ? 'border-emerald-600 bg-emerald-600 text-white'
+                        : 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                    }`}
+                  >
+                    <Truck className="h-3 w-3" />
+                    <span>Free Delivery</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Compact Department Filter Strip tailored to Search Matches */}
+              <div className="mt-2 flex items-center gap-1.5 overflow-x-auto border-t border-slate-100 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setSelectedCategory('all')}
+                  className={`rounded-lg border px-3 py-1.5 text-xs font-bold whitespace-nowrap shrink-0 transition-colors ${
+                    selectedCategory === 'all'
+                      ? 'border-slate-900 bg-slate-900 text-white'
+                      : 'border-slate-200 bg-slate-50 text-slate-700 hover:border-[#F85606]'
+                  }`}
+                >
+                  All Categories ({rawSearchMatchedProducts.length})
+                </button>
+                {DEPARTMENTS.map((dept) => {
+                  const deptCount = rawSearchMatchedProducts.filter(
+                    (p) => p.category === dept
+                  ).length;
+                  if (effectiveSearchTerm && deptCount === 0 && selectedCategory !== dept) {
+                    return null;
+                  }
+                  return (
+                    <button
+                      key={dept}
+                      type="button"
+                      onClick={() => setSelectedCategory(dept)}
+                      className={`rounded-lg border px-3 py-1.5 text-xs font-bold whitespace-nowrap shrink-0 transition-colors ${
+                        selectedCategory === dept
+                          ? 'border-[#F85606] bg-[#F85606] text-white'
+                          : 'border-slate-200 bg-white text-slate-700 hover:border-orange-300 hover:text-[#F85606]'
+                      }`}
+                    >
+                      {DEPARTMENT_META[dept].shortLabel} ({deptCount})
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Search Results Grid or Smart Fallback with Recommendations */}
+            {filteredProducts.length > 0 ? (
+              <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-2xs sm:p-5">
+                {renderStaggeredProductGrid(filteredProducts, 'search-results-page')}
+              </div>
+            ) : (
+              <div className="space-y-6">
+                <div className="rounded-2xl border border-orange-200 bg-white p-8 text-center shadow-2xs">
+                  <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-[#FFF3EB] text-[#F85606]">
+                    <Search className="h-6 w-6" />
+                  </div>
+                  <h2 className="mt-3 font-display text-lg font-extrabold text-slate-950">
+                    No exact products found for &ldquo;{effectiveSearchTerm}&rdquo;
+                  </h2>
+                  <p className="mx-auto mt-1 max-w-md text-xs text-slate-500">
+                    Try checking your spelling, searching a shorter keyword, or pick one of the popular BuyKit searches below.
+                  </p>
+
+                  <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+                    {QUICK_SEARCH_TAGS.map((tag) => (
+                      <button
+                        key={tag}
+                        type="button"
+                        onClick={() => handleExecuteSearch(tag)}
+                        className="rounded-lg border border-orange-200 bg-[#FFF8F4] px-3 py-1.5 text-xs font-bold text-[#F85606] hover:bg-[#F85606] hover:text-white"
+                      >
+                        {tag}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="mt-4 flex items-center justify-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleExitSearchPage}
+                      className="rounded-xl bg-[#F85606] px-5 py-2.5 text-xs font-extrabold text-white hover:bg-[#d94800]"
+                    >
+                      Back to Storefront
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handleResetAllFilters();
+                        setActiveBottomTab('shop');
+                      }}
+                      className="rounded-xl border border-slate-300 bg-white px-5 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50"
+                    >
+                      Browse All Products
+                    </button>
+                  </div>
+                </div>
+
+                {/* Recommended Products Fallback so Search Page is never dead */}
+                <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-2xs sm:p-5">
+                  <div className="mb-4 flex items-center justify-between border-b border-slate-100 pb-3">
+                    <div>
+                      <h3 className="font-display text-base font-extrabold text-slate-950 sm:text-lg">
+                        Popular &amp; Best-Selling Products You May Like
+                      </h3>
+                      <p className="text-xs text-slate-500">
+                        Top-rated BuyKit deals available for instant LKR delivery
+                      </p>
+                    </div>
+                  </div>
+                  {renderStaggeredProductGrid(
+                    [...catalog].sort((a, b) => b.soldCount - a.soldCount).slice(0, 6),
+                    'search-fallback-recs'
+                  )}
+                </div>
+              </div>
+            )}
+          </section>
         )}
 
         {/* =========================================================
@@ -3238,7 +4746,7 @@ export default function App() {
         )}
 
         {/* =========================================================
-            TAB 3: BUYKIT LOGO TAB (Super Hub — Exclusive Deals & Choice Bundles)
+            TAB 3: BUYKIT LOGO TAB (Exclusive Deals & Choice Bundles)
            ========================================================= */}
         {activeBottomTab === 'buykit' && (
           <section className="space-y-8">
@@ -3249,7 +4757,7 @@ export default function App() {
                     <BuyKitLogoBadge size="lg" />
                     <div>
                       <span className="text-xs font-bold tracking-wider text-orange-300 uppercase">
-                        BuyKit with Pramu · Official Super Hub
+                        BuyKit with Pramu · Official Mall
                       </span>
                       <h1 className="font-display text-2xl font-bold tracking-tight sm:text-3xl">
                         Exclusive New User Zone & Choice Bundles
@@ -3257,7 +4765,7 @@ export default function App() {
                     </div>
                   </div>
                   <p className="max-w-xl text-sm leading-relaxed text-orange-50">
-                    Claim your New User Starter Pass to unlock up to 65% off across all {catalog.length}+ flagship products in LKR, compare products side by side, or select a verified Google Maps pickup hub.
+                    Claim your New User Starter Pass to unlock up to 65% off across all {catalog.length}+ flagship products in LKR and compare top deals side by side.
                   </p>
                   <div className="flex flex-wrap gap-3 pt-2">
                     <button
@@ -3276,14 +4784,6 @@ export default function App() {
                     >
                       <Scale className="h-4 w-4 text-orange-300" />
                       <span>Open Product Comparison Board</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setIsPickupMapOpen(true)}
-                      className="inline-flex items-center gap-1.5 rounded-xl bg-white/15 px-4 py-2.5 text-xs font-semibold text-white backdrop-blur-xs transition-colors hover:bg-white/25 whitespace-nowrap shrink-0"
-                    >
-                      <MapPin className="h-4 w-4 text-orange-300" />
-                      <span>Google Maps Pickup Locator</span>
                     </button>
                   </div>
                 </div>
@@ -3359,12 +4859,46 @@ export default function App() {
         )}
 
         {/* =========================================================
-            TAB 4: DARAZ / ALIEXPRESS CHECKOUT PAGE (Payment Option, Applied Coupons, Delivery Fee vs Free Delivery & Final Total Payable)
+            TAB 4: 100% DARAZ / ALIEXPRESS SHOPPING CART PAGE
+            (Shows ONLY user-added products, Select/Unselect checkboxes & Sticky Bottom Total Payable + Pay Now)
            ========================================================= */}
         {activeBottomTab === 'cart' && (
+          <DarazAliCartView
+            items={userCartItems}
+            selectedItemIds={selectedCartItemIds}
+            onToggleSelectItem={handleToggleSelectCartItem}
+            onToggleSelectAll={handleToggleSelectAllCartItems}
+            onUpdateItemQuantity={handleUpdateCartQuantity}
+            onRemoveItem={handleRemoveCartItem}
+            onRemoveSelectedItems={handleRemoveSelectedCartItems}
+            onOpenProductById={(productId) => {
+              const matched = catalog.find(
+                (p) => sanitizeId(p.id) === productId || p.id === productId
+              );
+              if (matched) openProductDetails(matched);
+            }}
+            onContinueShopping={() => {
+              setActiveBottomTab('shop');
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }}
+            onProceedToCheckout={() => {
+              if (selectedCartItems.length === 0) return;
+              setCheckoutSource('cart');
+              setActiveBottomTab('checkout');
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }}
+          />
+        )}
+
+        {/* =========================================================
+            SEPARATE CHECKOUT & PAYMENT PAGE
+            (Opened when clicking "Pay Now" from Cart or "Buy Now" on a Product:
+             Order Summary, Coupons, Shipping Address & Payment Options)
+           ========================================================= */}
+        {activeBottomTab === 'checkout' && (
           <DarazAliCheckoutView
             currentUser={currentUser}
-            items={effectiveCheckoutItems}
+            items={activeCheckoutItems}
             fullName={fullName}
             email={userEmail}
             phone={phone}
@@ -3377,14 +4911,20 @@ export default function App() {
             selectedCountryCode={selectedCountryCode}
             selectedLanguageCode={selectedLanguageCode}
             savedCards={savedCards}
+            availableCoupons={storeCoupons}
             paymentMethod={paymentMethod}
             checkoutSubmitting={checkoutSubmitting}
             onSelectPaymentMethod={setPaymentMethod}
             onUpdateItemQuantity={handleUpdateCartQuantity}
             onRemoveItem={handleRemoveCartItem}
             onOpenSettingsTab={(tab) => openAccountSettings(tab)}
-            onOpenPickupMap={() => setIsPickupMapOpen(true)}
+            onOpenPickupMap={() => {}}
             onContinueShopping={() => setActiveBottomTab('shop')}
+            onBackToCart={() => {
+              setCheckoutSource('cart');
+              setActiveBottomTab('cart');
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }}
             onOpenAuthModal={() => {
               setPendingCartProduct(null);
               setPendingBuyNowMode(false);
@@ -3453,13 +4993,23 @@ export default function App() {
               setActiveBottomTab(tab);
               window.scrollTo({ top: 0, behavior: 'smooth' });
             }}
-            onOpenPickupMap={() => setIsPickupMapOpen(true)}
+            onOpenPickupMap={() => {}}
             onOpenCompareModal={() => setIsCompareModalOpen(true)}
             selectedCountryCode={selectedCountryCode}
             selectedLanguageCode={selectedLanguageCode}
             savedCardsCount={savedCards.length}
             onOpenSettingsModal={(tab) => openAccountSettings(tab || 'profile')}
-            onOpenAdminStudio={() => setIsAdminStudioOpen(true)}
+            isAdmin={isCurrentUserAdmin}
+            unreadAdminNotificationCount={unreadAdminNotificationCount}
+            onOpenAdminStudio={
+              isCurrentUserAdmin
+                ? () => {
+                    setAdminEditingProduct(null);
+                    setAdminDashboardTab('products');
+                    setIsAdminStudioOpen(true);
+                  }
+                : undefined
+            }
             logoBadge={<BuyKitLogoBadge size="md" />}
           />
         )}
@@ -3475,14 +5025,6 @@ export default function App() {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-4">
-            <button
-              type="button"
-              onClick={() => setIsPickupMapOpen(true)}
-              className="hover:text-[#F85606] hover:underline"
-            >
-              Google Maps Pickup Hubs
-            </button>
-            <span aria-hidden="true">·</span>
             <button
               type="button"
               onClick={() => setIsCompareModalOpen(true)}
@@ -3560,7 +5102,9 @@ export default function App() {
                 window.scrollTo({ top: 0, behavior: 'smooth' });
               }}
               className={`${
-                activeBottomTab === 'cart' ? 'mt-0 p-1' : '-mt-7 p-1.5'
+                activeBottomTab === 'cart' || activeBottomTab === 'checkout'
+                  ? 'mt-0 p-1'
+                  : '-mt-7 p-1.5'
               } flex items-center justify-center rounded-2xl border-4 border-white bg-black shadow-lg ring-2 transition-all whitespace-nowrap shrink-0 ${
                 activeBottomTab === 'buykit'
                   ? 'ring-[#F85606]'
@@ -3569,7 +5113,9 @@ export default function App() {
             >
               <div
                 className={`${
-                  activeBottomTab === 'cart' ? 'h-8 w-8' : 'h-11 w-11'
+                  activeBottomTab === 'cart' || activeBottomTab === 'checkout'
+                    ? 'h-8 w-8'
+                    : 'h-11 w-11'
                 } overflow-hidden rounded-xl bg-black`}
               >
                 <img
@@ -3589,7 +5135,7 @@ export default function App() {
               window.scrollTo({ top: 0, behavior: 'smooth' });
             }}
             className={`relative flex flex-col items-center justify-center gap-0.5 py-1 text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
-              activeBottomTab === 'cart'
+              activeBottomTab === 'cart' || activeBottomTab === 'checkout'
                 ? 'font-semibold text-[#F85606]'
                 : 'text-slate-500 hover:text-slate-900'
             }`}
@@ -3716,8 +5262,9 @@ export default function App() {
                     })}
                   </div>
 
-                  {/* Right: Compare, Wishlist & Close */}
+                  {/* Right: Compare, Wishlist & Close (Admin manages products inside Admin Dashboard only) */}
                   <div className="flex items-center gap-2">
+
                     <button
                       type="button"
                       onClick={(e) => handleToggleCompare(selectedProduct, e)}
@@ -3781,7 +5328,6 @@ export default function App() {
                               selectedProduct.originalPrice) *
                               100
                           )}
-                          onToggleStock={handleToggleProductStock}
                         />
                       </div>
                     </div>
@@ -3818,16 +5364,6 @@ export default function App() {
                               {selectedProduct.dealLabel}
                             </span>
                           </div>
-
-                          <button
-                            type="button"
-                            onClick={(e) => handleToggleProductStock(selectedProduct.id, e)}
-                            className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 font-sans text-[11px] font-semibold text-slate-700 hover:border-[#F85606] hover:text-[#F85606]"
-                          >
-                            {selectedProduct.stockRemaining > 0
-                              ? 'Switch to Out of Stock'
-                              : 'Switch to In Stock'}
-                          </button>
                         </div>
 
                         <h1 className="font-display text-2xl leading-tight font-extrabold text-slate-950 sm:text-3xl lg:text-4xl">
@@ -3838,7 +5374,7 @@ export default function App() {
                           {selectedProduct.tagline}
                         </p>
 
-                        <div className="flex flex-wrap items-center gap-3 border-t border-slate-100 pt-3 text-xs font-mono tabular-nums text-slate-600 sm:text-sm">
+                         <div className="flex flex-wrap items-center gap-3 border-t border-slate-100 pt-3 text-xs font-mono tabular-nums text-slate-600 sm:text-sm">
                           <span className="font-bold text-amber-600">
                             ★ {ratingStats.averageRating.toFixed(1)} Rating
                           </span>
@@ -3853,6 +5389,50 @@ export default function App() {
                           <span className="font-sans font-semibold text-slate-700">
                             Store: {selectedProduct.storeName}
                           </span>
+                        </div>
+
+                        {/* Stock Quota Bar & Special Offer Banner */}
+                        <div className="space-y-2 border-t border-slate-100 pt-3">
+                          <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                            <span className="font-semibold text-slate-700">
+                              Stock Quota:{' '}
+                              <strong className="font-mono text-slate-950">
+                                {selectedProduct.stockRemaining} / {selectedProduct.totalStock} Units
+                              </strong>
+                            </span>
+                            <span className="rounded-md bg-slate-100 px-2 py-0.5 font-mono text-[11px] font-bold text-slate-700">
+                              Max Order Quota: {selectedProduct.maxOrderQuota || 5} units / order
+                            </span>
+                          </div>
+                          <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100">
+                            <div
+                              style={{
+                                width: `${Math.min(
+                                  100,
+                                  Math.max(
+                                    5,
+                                    Math.round(
+                                      (selectedProduct.stockRemaining /
+                                        Math.max(1, selectedProduct.totalStock)) *
+                                        100
+                                    )
+                                  )
+                                )}%`,
+                              }}
+                              className={`h-full rounded-full ${
+                                selectedProduct.stockRemaining > 5
+                                  ? 'bg-emerald-500'
+                                  : 'bg-[#F85606]'
+                              }`}
+                            />
+                          </div>
+
+                          {selectedProduct.specialOfferText && (
+                            <div className="mt-2 flex items-center gap-2 rounded-xl border border-orange-200 bg-[#FFF5F0] px-3 py-2 text-xs font-bold text-[#F85606]">
+                              <Sparkles className="h-4 w-4 shrink-0" />
+                              <span>Special Offer: {selectedProduct.specialOfferText}</span>
+                            </div>
+                          )}
                         </div>
                       </div>
 
@@ -3900,8 +5480,9 @@ export default function App() {
                                   <span className="inline-flex items-center gap-1.5 rounded-lg bg-[#FFF3EB] px-2.5 py-1 text-xs font-extrabold text-[#F85606]">
                                     <Tag className="h-3.5 w-3.5" />
                                     <span>
-                                      Coupons & Vouchers ({AVAILABLE_CHECKOUT_COUPONS.length}{' '}
-                                      Available · Optional)
+                                      Coupons & Vouchers (
+                                      {getCombinedProductCoupons(selectedProduct).length} Available ·
+                                      Optional)
                                     </span>
                                   </span>
 
@@ -3950,7 +5531,7 @@ export default function App() {
                             {/* Collapsible Coupons List (Shown ONLY when Arrow Bar is clicked) */}
                             {isDetailCouponsOpen && (
                               <div className="grid grid-cols-1 gap-3 pt-1 sm:grid-cols-2">
-                                {AVAILABLE_CHECKOUT_COUPONS.map((cp) => {
+                                {getCombinedProductCoupons(selectedProduct).map((cp) => {
                                   const isSelected = detailCouponId === cp.id;
                                   const meetsMin = grossSubtotal >= cp.minSpend;
                                   const estimatedSave = !meetsMin
@@ -4213,7 +5794,7 @@ export default function App() {
                               : 'Standard Islandwide Delivery (Rs. 450)'}
                           </p>
                           <p className="mt-0.5 text-[11px] text-slate-600">
-                            Dispatched from: {selectedHubName}
+                            Islandwide Express Courier · Tracked Doorstep Delivery
                           </p>
                         </div>
                       </div>
@@ -4238,6 +5819,7 @@ export default function App() {
                       <ProductReviewsAndQaSection
                         product={selectedProduct}
                         currentUser={currentUser}
+                        isAdmin={isCurrentUserAdmin}
                         hasPurchased={hasUserPurchasedProduct(selectedProduct)}
                         reviews={ratingStats.reviews}
                         replies={allReplies.filter(
@@ -4261,6 +5843,22 @@ export default function App() {
                           handleBuyNow(prod, q);
                         }}
                         onShowToast={showToast}
+                        onReviewSubmitted={({ productId, productTitle, rating, comment }) => {
+                          void pushAdminNotification({
+                            type: 'review_added',
+                            title: `New ${rating}★ Review on ${productTitle}`,
+                            message: `"${comment.slice(0, 160)}"`,
+                            relatedId: productId,
+                          });
+                        }}
+                        onQuestionSubmitted={({ productId, productTitle, questionText }) => {
+                          void pushAdminNotification({
+                            type: 'question_asked',
+                            title: `New Customer Question on ${productTitle}`,
+                            message: `Q: "${questionText.slice(0, 180)}" — Reply in Admin Q&A Desk.`,
+                            relatedId: productId,
+                          });
+                        }}
                       />
                     </div>
                   )}
@@ -4321,9 +5919,9 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Right: Clear Medium-Sized Add to Cart & Buy Now Buttons */}
+                  {/* Right: Elongated Daraz / AliExpress Add to Cart & Buy Now Buttons */}
                   {selectedProduct.stockRemaining > 0 ? (
-                    <div className="flex shrink-0 items-center gap-2 sm:gap-2.5">
+                    <div className="flex w-full flex-1 items-center gap-2.5 sm:w-auto sm:min-w-[340px] sm:max-w-[600px] sm:gap-3">
                       <button
                         type="button"
                         onClick={() => {
@@ -4332,7 +5930,7 @@ export default function App() {
                           setSelectedProduct(null);
                           handleAddToCart(prod, q, undefined, false);
                         }}
-                        className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-[#FFB800] px-4 py-2.5 text-xs font-extrabold text-slate-950 shadow-xs transition-colors hover:bg-[#e5a600] sm:px-5 sm:text-sm"
+                        className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-[#FFB800] px-6 py-3 text-xs font-extrabold text-slate-950 shadow-xs transition-colors hover:bg-[#e5a600] sm:px-8 sm:text-sm"
                       >
                         <ShoppingBag className="h-4 w-4 shrink-0" />
                         <span>{t.addToCart}</span>
@@ -4345,28 +5943,20 @@ export default function App() {
                           const q = detailQuantity;
                           handleBuyNow(prod, q);
                         }}
-                        className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-[#F85606] px-4 py-2.5 text-xs font-extrabold text-white shadow-xs transition-colors hover:bg-[#d94800] sm:px-5 sm:text-sm"
+                        className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-[#F85606] px-6 py-3 text-xs font-extrabold text-white shadow-xs transition-colors hover:bg-[#d94800] sm:px-8 sm:text-sm"
                       >
                         <Bolt className="h-4 w-4 shrink-0" />
                         <span>{t.buyNow}</span>
                       </button>
                     </div>
                   ) : (
-                    <div className="flex shrink-0 items-center gap-2 sm:gap-2.5">
+                    <div className="flex w-full flex-1 items-center gap-2 sm:w-auto sm:max-w-[420px]">
                       <button
                         type="button"
                         disabled
-                        className="inline-flex cursor-not-allowed items-center justify-center gap-1.5 rounded-xl border border-red-300 bg-red-600 px-4 py-2.5 text-xs font-extrabold text-white opacity-90 sm:text-sm"
+                        className="inline-flex flex-1 cursor-not-allowed items-center justify-center gap-1.5 rounded-xl border border-red-300 bg-red-600 px-6 py-3 text-xs font-extrabold text-white opacity-90 sm:text-sm"
                       >
-                        <span>Out of Stock</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={(e) => handleToggleProductStock(selectedProduct.id, e)}
-                        className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2.5 text-xs font-extrabold text-white shadow-xs transition-colors hover:bg-emerald-700 sm:text-sm"
-                      >
-                        <CheckCircle2 className="h-4 w-4 shrink-0" />
-                        <span>Restock Item</span>
+                        <span>Out of Stock · Currently Unavailable</span>
                       </button>
                     </div>
                   )}
@@ -4407,23 +5997,12 @@ export default function App() {
         }}
       />
 
-      {/* Google Maps Pickup Hub Locator Modal */}
-      <PickupMapModal
-        isOpen={isPickupMapOpen}
-        onClose={() => setIsPickupMapOpen(false)}
-        selectedHubName={selectedHubName}
-        onSelectHub={(hub) => {
-          setSelectedHubName(hub);
-          showToast(`Selected "${hub}" as your preferred delivery/pickup hub.`);
-        }}
-      />
-
-      {/* Order Tracking Modal (Progress Bar + 4-Stage Timeline: Preparing, Dispatched, In Transit, Delivered) */}
+      {/* Order Tracking Modal (Shoppers view progress; only Admin can update order status) */}
       <OrderTrackingModal
         isOpen={Boolean(trackingOrder)}
         order={trackingOrder}
         onClose={() => setTrackingOrder(null)}
-        onUpdateOrderStage={handleUpdateOrderTrackingStage}
+        onUpdateOrderStage={isCurrentUserAdmin ? handleUpdateOrderTrackingStage : undefined}
         onCancelOrder={handleCancelOrder}
       />
 
@@ -4523,10 +6102,7 @@ export default function App() {
           );
           showToast('Updated your default checkout Credit/Debit card.');
         }}
-        onOpenPickupMap={() => {
-          setIsSettingsModalOpen(false);
-          setIsPickupMapOpen(true);
-        }}
+        onOpenPickupMap={() => {}}
         onSaveAllSettings={async () => {
           if (currentUser) {
             await handleSaveAddressToFirestore();
@@ -4538,10 +6114,51 @@ export default function App() {
         }}
       />
 
-      {/* Admin Storefront & Campaign Studio Modal (Add Products with Google Details, Launch Animated Sales, Create Promotional Posters) */}
-      <AdminStorefrontStudioModal
-        isOpen={isAdminStudioOpen}
-        onClose={() => setIsAdminStudioOpen(false)}
+      {/* Startup Welcome Popup Poster Modal (Configured by Admin in Promo Tab) */}
+      <WelcomePopupPosterModal
+        isOpen={isWelcomePopupOpen}
+        config={welcomePopupConfig}
+        onClose={() => {
+          setIsWelcomePopupOpen(false);
+          try {
+            window.sessionStorage.setItem(
+              `buykit_popup_seen_${welcomePopupConfig.campaignVersion}`,
+              '1'
+            );
+          } catch {
+            // ignore
+          }
+        }}
+        onCtaClick={(cfg) => {
+          setIsWelcomePopupOpen(false);
+          try {
+            window.sessionStorage.setItem(`buykit_popup_seen_${cfg.campaignVersion}`, '1');
+          } catch {
+            // ignore
+          }
+          if (cfg.targetProductId) {
+            const targetProd = catalog.find((p) => p.id === cfg.targetProductId);
+            if (targetProd) {
+              openProductDetails(targetProd);
+              return;
+            }
+          }
+          setActiveBottomTab('buykit');
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        }}
+      />
+
+      {/* STRICTLY ADMIN-ONLY 6-TAB ADMIN PANEL DASHBOARD */}
+      <AdminDashboardModal
+        isOpen={isAdminStudioOpen && isCurrentUserAdmin}
+        isAdmin={isCurrentUserAdmin}
+        currentUser={currentUser}
+        initialTab={adminDashboardTab}
+        initialEditProduct={adminEditingProduct}
+        onClose={() => {
+          setIsAdminStudioOpen(false);
+          setAdminEditingProduct(null);
+        }}
         catalog={catalog}
         onAddNewProductWithDetails={(newProd, enriched, optionalSale, optionalPoster) => {
           setCatalog((prev) => [newProd, ...prev]);
@@ -4570,10 +6187,34 @@ export default function App() {
               ...prev,
             ]);
           }
-          showToast(
-            `Added "${newProd.title}" with extended specifications and storefront promotions!`
-          );
+          showToast(`Added "${newProd.title}" to BuyKit Catalog!`);
         }}
+        onUpdateProduct={(updatedProd, enriched) => {
+          setCatalog((prev) =>
+            prev.map((p) => (p.id === updatedProd.id ? updatedProd : p))
+          );
+          if (enriched) {
+            setEnrichedProductMap((prev) => ({
+              ...prev,
+              [updatedProd.id]: enriched,
+            }));
+          }
+          setSelectedProduct((curr) =>
+            curr && curr.id === updatedProd.id ? updatedProd : curr
+          );
+          showToast(`Updated "${updatedProd.title}" successfully!`);
+        }}
+        onDeleteProduct={(productId) => {
+          const target = catalog.find((p) => p.id === productId);
+          setCatalog((prev) => prev.filter((p) => p.id !== productId));
+          setCreativeSales((prev) => prev.filter((s) => s.productId !== productId));
+          setPromoPosters((prev) => prev.filter((p) => p.productId !== productId));
+          setSelectedProduct((curr) => (curr && curr.id === productId ? null : curr));
+          showToast(`Deleted "${target?.title || 'Product'}" from catalog.`);
+        }}
+        onToggleProductStock={(productId) => handleToggleProductStock(productId)}
+        creativeSales={creativeSales}
+        countdownSeconds={countdownSeconds}
         onPublishSaleCampaign={(
           saleSpotlight,
           updatedPrice,
@@ -4599,10 +6240,72 @@ export default function App() {
                 : p
             )
           );
-          showToast(
-            `Published animated sale "${saleSpotlight.saleBannerTitle}" to the User Dashboard!`
-          );
+          void pushAdminNotification({
+            type: 'sale_started',
+            title: `Sale Started: ${saleSpotlight.saleBannerTitle}`,
+            message: `Live offer published at ${formatLKR(updatedPrice)} (${saleSpotlight.discountPercent}% OFF).`,
+            relatedId: saleSpotlight.id,
+          });
+          showToast(`Launched sale "${saleSpotlight.saleBannerTitle}"!`);
         }}
+        onDeleteSaleCampaign={(saleId) => {
+          const target = creativeSales.find((s) => s.id === saleId);
+          setCreativeSales((prev) => prev.filter((s) => s.id !== saleId));
+          void pushAdminNotification({
+            type: 'sale_ended',
+            title: `Sale Ended: ${target?.saleBannerTitle || 'Campaign'}`,
+            message: 'Admin ended and removed this sale offer from the storefront.',
+            relatedId: saleId,
+          });
+          showToast(`Ended sale "${target?.saleBannerTitle || 'Offer'}".`);
+        }}
+        onSetFlashCountdown={(totalSecs, title) => {
+          saleEndedNotifiedRef.current = false;
+          setCountdownSeconds(totalSecs);
+          const hrs = Math.floor(totalSecs / 3600);
+          const mins = Math.floor((totalSecs % 3600) / 60);
+          void pushAdminNotification({
+            type: 'sale_started',
+            title: `Flash Sale Started: ${title || 'BuyKit Flash Sale'}`,
+            message: `Countdown set to ${hrs}h ${mins}m (${totalSecs}s) by Admin.`,
+            relatedId: 'flash_sale_timer',
+          });
+          showToast(`Flash Sale Countdown started (${hrs}h ${mins}m)!`);
+        }}
+        onEndFlashSaleNow={() => {
+          saleEndedNotifiedRef.current = true;
+          setCountdownSeconds(0);
+          void pushAdminNotification({
+            type: 'sale_ended',
+            title: 'Flash Sale Ended by Admin',
+            message: 'Admin manually ended the live Flash Sale countdown timer.',
+            relatedId: 'flash_sale_timer',
+          });
+          showToast('Flash Sale countdown ended.');
+        }}
+        storeCoupons={storeCoupons}
+        onSaveCoupon={(coupon) => {
+          setStoreCoupons((prev) => {
+            const exists = prev.some((c) => c.id === coupon.id);
+            return exists
+              ? prev.map((c) => (c.id === coupon.id ? coupon : c))
+              : [coupon, ...prev];
+          });
+          void pushAdminNotification({
+            type: 'promo_updated',
+            title: `Coupon Saved: ${coupon.code}`,
+            message: `${coupon.title} (${coupon.badgeText}) is now live in Checkout.`,
+            relatedId: coupon.id,
+          });
+          showToast(`Saved Checkout Coupon "${coupon.code}"!`);
+        }}
+        onDeleteCoupon={(couponId) => {
+          const target = storeCoupons.find((c) => c.id === couponId);
+          setStoreCoupons((prev) => prev.filter((c) => c.id !== couponId));
+          showToast(`Deleted coupon "${target?.code || ''}".`);
+        }}
+        promoPosters={promoPosters}
+        adminBanners={adminBanners}
         onPublishPromoPoster={(poster) => {
           setPromoPosters((prev) => [poster, ...prev]);
           setAdminBanners((prev) => [
@@ -4621,8 +6324,81 @@ export default function App() {
             ...prev,
           ]);
           setHeroSlideIndex(0);
-          showToast('Published new promotional poster to the User Dashboard!');
+          void pushAdminNotification({
+            type: 'promo_updated',
+            title: `New Promo Poster Published`,
+            message: `"${poster.headline}" (${poster.discountBadge}) added to Storefront Banners.`,
+            relatedId: poster.id,
+          });
+          showToast('Published new promotional poster & hero banner!');
         }}
+        onUpdatePromoPoster={(poster) => {
+          setPromoPosters((prev) =>
+            prev.map((p) => (p.id === poster.id ? poster : p))
+          );
+          setAdminBanners((prev) =>
+            prev.map((b) =>
+              b.id === poster.id
+                ? {
+                    ...b,
+                    productId: poster.productId,
+                    campaignTag: poster.campaignTag,
+                    discountBadge: poster.discountBadge,
+                    headline: poster.headline,
+                    subheadline: poster.subheadline,
+                    imageUrl: poster.imageUrl,
+                  }
+                : b
+            )
+          );
+          showToast(`Updated promotional poster "${poster.headline}"!`);
+        }}
+        onDeletePromoPoster={(posterId) => {
+          setPromoPosters((prev) => prev.filter((p) => p.id !== posterId));
+          setAdminBanners((prev) =>
+            prev.length > 1 ? prev.filter((b) => b.id !== posterId) : prev
+          );
+          showToast('Deleted promotional poster.');
+        }}
+        onDeleteAdminBanner={(bannerId) => {
+          if (adminBanners.length <= 1) return;
+          setAdminBanners((prev) => prev.filter((b) => b.id !== bannerId));
+          setHeroSlideIndex(0);
+          showToast('Removed hero banner.');
+        }}
+        welcomePopupConfig={welcomePopupConfig}
+        onSaveWelcomePopupConfig={(nextConfig) => {
+          setWelcomePopupConfig(nextConfig);
+          void pushAdminNotification({
+            type: 'promo_updated',
+            title: `Welcome Popup Poster ${nextConfig.enabled ? 'Published' : 'Disabled'}`,
+            message: `"${nextConfig.headline}" (${nextConfig.enabled ? 'Visible on site entry' : 'Hidden'}).`,
+            relatedId: 'welcome_popup',
+          });
+          showToast(
+            nextConfig.enabled
+              ? 'Startup Welcome Popup Poster saved & enabled for site visitors!'
+              : 'Startup Welcome Popup Poster disabled.'
+          );
+        }}
+        onPreviewWelcomePopup={() => {
+          setIsAdminStudioOpen(false);
+          setIsWelcomePopupOpen(true);
+        }}
+        notifications={combinedAdminNotifications}
+        onMarkNotificationRead={handleMarkNotificationRead}
+        onMarkAllNotificationsRead={handleMarkAllNotificationsRead}
+        onDeleteNotification={handleDeleteNotification}
+        adminOrders={combinedAdminOrders}
+        onUpdateAdminOrderStatus={handleUpdateAdminOrderStatus}
+        allQuestions={allQuestions}
+        allAnswers={allAnswers}
+        onAdminAnswerQuestion={handleAdminAnswerQuestion}
+        onAdminDeleteQuestion={handleAdminDeleteQuestion}
+        onAdminDeleteAnswer={handleAdminDeleteAnswer}
+        adminEmails={adminEmails}
+        onAddAdminEmail={handleAddAdminEmail}
+        onRemoveAdminEmail={handleRemoveAdminEmail}
       />
     </div>
   );

@@ -10,7 +10,11 @@ import {
   Sparkles,
   FileCode2,
 } from 'lucide-react';
-import { usePWAInstall, useOnlineStatus } from '../utils/usePWAInstall';
+import {
+  usePWAInstall,
+  useOnlineStatus,
+  checkIsRunningAsInstalledApp,
+} from '../utils/usePWAInstall';
 
 export const OfflineIndicator: React.FC = () => {
   const isOnline = useOnlineStatus();
@@ -34,7 +38,14 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
   variant = 'header',
   searchQuery = '',
 }) => {
-  const { isInstallable, isInstalled, isIOS, isAndroid, install } = usePWAInstall();
+  const {
+    isInstallable,
+    isInstalled,
+    isIOS,
+    isAndroid,
+    install,
+    confirmInstalled,
+  } = usePWAInstall();
   const [showGuideModal, setShowGuideModal] = useState(false);
   const [installSuccessMsg, setInstallSuccessMsg] = useState(false);
 
@@ -45,13 +56,30 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
   >('visit');
   const lastShownTimestampRef = useRef<number>(0);
   const hasTriggeredScrollRef = useRef<boolean>(false);
+  const isInstalledRef = useRef<boolean>(isInstalled);
 
-  // Trigger helper with cooldown so it animates smoothly without spamming
+  useEffect(() => {
+    isInstalledRef.current = isInstalled;
+    if (isInstalled) {
+      setIsNotificationVisible(false);
+      setShowGuideModal(false);
+    }
+  }, [isInstalled]);
+
+  // Trigger helper with cooldown so it animates smoothly without spamming,
+  // and NEVER shows if the app is already installed or opened in standalone/APK mode.
   const triggerBottomNotification = (
     reason: 'visit' | 'search' | 'scroll' | 'stay',
     cooldownMs = 20000
   ) => {
-    if (isInstalled || showGuideModal) return;
+    if (
+      isInstalledRef.current ||
+      checkIsRunningAsInstalledApp() ||
+      showGuideModal
+    ) {
+      setIsNotificationVisible(false);
+      return;
+    }
     const now = Date.now();
     if (now - lastShownTimestampRef.current < cooldownMs) return;
     lastShownTimestampRef.current = now;
@@ -61,7 +89,13 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
 
   // 1. Trigger when visiting the site (initial page entry) & staying on the site
   useEffect(() => {
-    if (variant !== 'floating' || isInstalled) return;
+    if (
+      variant !== 'floating' ||
+      isInstalled ||
+      checkIsRunningAsInstalledApp()
+    ) {
+      return;
+    }
 
     const initialVisitTimer = window.setTimeout(() => {
       triggerBottomNotification('visit', 0);
@@ -80,9 +114,16 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
 
   // 2. Trigger when scrolling through products on the site
   useEffect(() => {
-    if (variant !== 'floating' || isInstalled) return;
+    if (
+      variant !== 'floating' ||
+      isInstalled ||
+      checkIsRunningAsInstalledApp()
+    ) {
+      return;
+    }
 
     const handleScroll = () => {
+      if (isInstalledRef.current || checkIsRunningAsInstalledApp()) return;
       const scrollY = window.scrollY || document.documentElement.scrollTop;
       if (scrollY > 380 && !hasTriggeredScrollRef.current) {
         hasTriggeredScrollRef.current = true;
@@ -98,7 +139,13 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
 
   // 3. Trigger when searching for products
   useEffect(() => {
-    if (variant !== 'floating' || isInstalled) return;
+    if (
+      variant !== 'floating' ||
+      isInstalled ||
+      checkIsRunningAsInstalledApp()
+    ) {
+      return;
+    }
     if (!searchQuery || searchQuery.trim().length < 2) return;
 
     const searchTimer = window.setTimeout(() => {
@@ -117,7 +164,8 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
     return () => window.clearTimeout(hideTimer);
   }, [isNotificationVisible, notificationContext]);
 
-  if (isInstalled) {
+  // Never render anything if already installed or running inside the installed app/APK
+  if (isInstalled || checkIsRunningAsInstalledApp()) {
     return null;
   }
 
@@ -148,7 +196,7 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
       navigationColor: '#0A0A0C',
       backgroundColor: '#FAF9F6',
       enableNotifications: true,
-      startUrl: '/',
+      startUrl: '/?source=pwa',
       iconUrl: `${origin}/pwa-512x512.png`,
       maskableIconUrl: `${origin}/pwa-maskable-512x512.png`,
       webManifestUrl: `${origin}/manifest.webmanifest`,
@@ -419,18 +467,30 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
                 </div>
               </div>
 
-              <div className="flex items-center justify-between border-t border-slate-100 pt-3 text-[11px] text-slate-500">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-3 text-[11px] text-slate-500">
                 <span className="inline-flex items-center gap-1 font-semibold text-emerald-700">
                   <ShieldCheck className="h-4 w-4" />
                   <span>Offline Support &amp; Fast Caching Enabled</span>
                 </span>
-                <button
-                  type="button"
-                  onClick={() => setShowGuideModal(false)}
-                  className="rounded-lg bg-slate-900 px-4 py-1.5 text-xs font-bold text-white hover:bg-slate-800"
-                >
-                  Close
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      confirmInstalled();
+                      setShowGuideModal(false);
+                    }}
+                    className="rounded-lg border border-slate-200 bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-200"
+                  >
+                    Already Installed
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowGuideModal(false)}
+                    className="rounded-lg bg-slate-900 px-4 py-1.5 text-xs font-bold text-white hover:bg-slate-800"
+                  >
+                    Close
+                  </button>
+                </div>
               </div>
             </div>
           </div>

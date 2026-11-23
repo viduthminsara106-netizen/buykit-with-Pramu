@@ -86,6 +86,7 @@ export interface FirestoreQuestionAnswer {
 interface ProductReviewsAndQaSectionProps {
   product: MarketplaceProduct;
   currentUser: User | null;
+  isAdmin?: boolean;
   hasPurchased: boolean;
   reviews: FirestoreProductReview[];
   replies: FirestoreReviewReply[];
@@ -96,6 +97,17 @@ interface ProductReviewsAndQaSectionProps {
   onRequireAuth: () => void;
   onBuyNowProduct: () => void;
   onShowToast: (msg: string) => void;
+  onReviewSubmitted?: (info: {
+    productId: string;
+    productTitle: string;
+    rating: number;
+    comment: string;
+  }) => void;
+  onQuestionSubmitted?: (info: {
+    productId: string;
+    productTitle: string;
+    questionText: string;
+  }) => void;
 }
 
 // Helper: Compress an uploaded image file into a compact JPEG data URL (<= 60KB)
@@ -196,6 +208,7 @@ const RATING_LABELS: Record<number, string> = {
 export const ProductReviewsAndQaSection: React.FC<ProductReviewsAndQaSectionProps> = ({
   product,
   currentUser,
+  isAdmin = false,
   hasPurchased,
   reviews,
   replies,
@@ -206,6 +219,8 @@ export const ProductReviewsAndQaSection: React.FC<ProductReviewsAndQaSectionProp
   onRequireAuth,
   onBuyNowProduct,
   onShowToast,
+  onReviewSubmitted,
+  onQuestionSubmitted,
 }) => {
   const [activeSubTab, setActiveSubTab] = useState<'reviews' | 'qa'>('reviews');
   const [isSectionExpanded, setIsSectionExpanded] = useState<boolean>(true);
@@ -483,13 +498,20 @@ export const ProductReviewsAndQaSection: React.FC<ProductReviewsAndQaSectionProp
         updatedAt: serverTimestamp(),
       });
 
+      const submittedRating = Math.min(5, Math.max(1, Math.round(rating)));
       setComment('');
       setAttachedImageUrl('');
       setAttachedVideoUrl('');
       setAttachedVoiceUrl('');
       setRating(5);
       setIsWriteReviewOpen(false);
-      onShowToast(`Published your ${rating}-star review for "${product.title}"!`);
+      onReviewSubmitted?.({
+        productId: product.id,
+        productTitle: product.title,
+        rating: submittedRating,
+        comment: cleanComment,
+      });
+      onShowToast(`Published your ${submittedRating}-star review for "${product.title}"!`);
     } catch (err) {
       handleFirestoreError(err, OperationType.CREATE, reviewPath);
     } finally {
@@ -588,7 +610,12 @@ export const ProductReviewsAndQaSection: React.FC<ProductReviewsAndQaSectionProp
       });
 
       setQuestionInput('');
-      onShowToast('Your question has been posted for this product!');
+      onQuestionSubmitted?.({
+        productId: product.id,
+        productTitle: product.title,
+        questionText: cleanQuestion,
+      });
+      onShowToast('Your question has been posted! An official Admin will answer shortly.');
     } catch (err) {
       handleFirestoreError(err, OperationType.CREATE, questionPath);
     } finally {
@@ -596,10 +623,14 @@ export const ProductReviewsAndQaSection: React.FC<ProductReviewsAndQaSectionProp
     }
   };
 
-  // Submit Answer to a Product Question
+  // Submit Answer to a Product Question (STRICTLY ADMIN ONLY)
   const handleSubmitAnswer = async (questionId: string) => {
     if (!currentUser) {
       onRequireAuth();
+      return;
+    }
+    if (!isAdmin) {
+      onShowToast('Only Store Admins are authorized to answer customer product questions.');
       return;
     }
     const rawAns = answerTextMap[questionId] || '';
@@ -1241,7 +1272,7 @@ export const ProductReviewsAndQaSection: React.FC<ProductReviewsAndQaSectionProp
                 <div className="mt-4 rounded-xl border border-orange-200 bg-[#FFF8F4] p-4 text-center">
                   <Lock className="mx-auto mb-1.5 h-6 w-6 text-[#F85606]" />
                   <p className="text-xs font-semibold text-slate-800">
-                    Please sign in with Google to ask a question or answer shopper questions.
+                    Please sign in with Google to ask a question about this product.
                   </p>
                   <button
                     type="button"
@@ -1276,7 +1307,7 @@ export const ProductReviewsAndQaSection: React.FC<ProductReviewsAndQaSectionProp
             </div>
           </div>
 
-          {/* Right 7 Columns: Product Questions & Community/Merchant Answers */}
+          {/* Right 7 Columns: Product Questions & Official Admin Answers */}
           <div className="space-y-3.5 lg:col-span-7">
             {questions.length === 0 ? (
               <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center">
@@ -1285,7 +1316,7 @@ export const ProductReviewsAndQaSection: React.FC<ProductReviewsAndQaSectionProp
                   No questions asked yet for {product.title}.
                 </p>
                 <p className="mt-1 text-xs text-slate-500">
-                  Ask the first question on the left and verified buyers or the store will reply!
+                  Ask the first question on the left and our official BuyKit Admin team will answer!
                 </p>
               </div>
             ) : (
@@ -1313,33 +1344,52 @@ export const ProductReviewsAndQaSection: React.FC<ProductReviewsAndQaSectionProp
                         </div>
                       </div>
 
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setActiveAnswerQuestionId(isAnsOpen ? null : qItem.questionId)
-                        }
-                        className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-semibold text-slate-700 hover:border-[#F85606] hover:text-[#F85606] whitespace-nowrap shrink-0"
-                      >
-                        <CornerDownRight className="h-3.5 w-3.5" />
-                        <span>Answer ({qAnswers.length})</span>
-                      </button>
+                      {isAdmin ? (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setActiveAnswerQuestionId(isAnsOpen ? null : qItem.questionId)
+                          }
+                          className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-orange-300 bg-[#FFF3EB] px-2.5 py-1 text-xs font-bold whitespace-nowrap text-[#F85606] hover:bg-[#F85606] hover:text-white"
+                        >
+                          <CornerDownRight className="h-3.5 w-3.5" />
+                          <span>Admin Answer ({qAnswers.length})</span>
+                        </button>
+                      ) : (
+                        <span
+                          className={`inline-flex shrink-0 items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold whitespace-nowrap ${
+                            qAnswers.length > 0
+                              ? 'bg-emerald-50 text-emerald-700'
+                              : 'bg-slate-100 text-slate-500'
+                          }`}
+                        >
+                          {qAnswers.length > 0
+                            ? `Answered by Admin (${qAnswers.length})`
+                            : 'Awaiting Admin Reply'}
+                        </span>
+                      )}
                     </div>
 
-                    {/* Existing Answers */}
+                    {/* Existing Official Admin Answers */}
                     {qAnswers.length > 0 && (
                       <div className="mt-3 space-y-2 border-t border-slate-100 pt-3">
                         {qAnswers.map((ans) => (
                           <div
                             key={ans.id}
-                            className="flex items-start gap-2.5 rounded-xl bg-emerald-50/60 p-3 text-xs"
+                            className="flex items-start gap-2.5 rounded-xl border border-emerald-200/70 bg-emerald-50/70 p-3 text-xs"
                           >
                             <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded bg-emerald-600 font-mono text-[11px] font-bold text-white">
                               A
                             </span>
                             <div>
                               <p className="font-medium text-slate-800">{ans.answerText}</p>
-                              <p className="mt-0.5 text-[11px] text-slate-500">
-                                Answered by <strong className="text-slate-700">{ans.userName}</strong>
+                              <p className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500">
+                                <span className="inline-flex items-center gap-1 rounded bg-emerald-600 px-1.5 py-0.5 text-[10px] font-extrabold text-white uppercase">
+                                  Official Admin Reply
+                                </span>
+                                <span>
+                                  by <strong className="text-slate-700">{ans.userName}</strong>
+                                </span>
                               </p>
                             </div>
                           </div>
@@ -1347,8 +1397,8 @@ export const ProductReviewsAndQaSection: React.FC<ProductReviewsAndQaSectionProp
                       </div>
                     )}
 
-                    {/* Inline Answer Form */}
-                    {isAnsOpen && (
+                    {/* Inline Answer Form (STRICTLY ADMIN ONLY) */}
+                    {isAdmin && isAnsOpen && (
                       <div className="mt-3 flex items-center gap-2 border-t border-slate-100 pt-3">
                         <input
                           type="text"
@@ -1359,17 +1409,17 @@ export const ProductReviewsAndQaSection: React.FC<ProductReviewsAndQaSectionProp
                               [qItem.questionId]: e.target.value,
                             }))
                           }
-                          placeholder="Write an answer to this question..."
+                          placeholder="Write an official Admin answer to this customer question..."
                           className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs focus:border-[#F85606] focus:outline-none"
                         />
                         <button
                           type="button"
                           disabled={submittingAnswerId === qItem.questionId}
                           onClick={() => handleSubmitAnswer(qItem.questionId)}
-                          className="inline-flex items-center gap-1 rounded-lg bg-[#F85606] px-3.5 py-1.5 text-xs font-bold text-white hover:bg-[#d94800] disabled:opacity-50 whitespace-nowrap shrink-0"
+                          className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-[#F85606] px-3.5 py-1.5 text-xs font-bold whitespace-nowrap text-white hover:bg-[#d94800] disabled:opacity-50"
                         >
                           <Send className="h-3 w-3" />
-                          <span>Post Answer</span>
+                          <span>Post Official Reply</span>
                         </button>
                       </div>
                     )}

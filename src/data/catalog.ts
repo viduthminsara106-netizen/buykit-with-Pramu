@@ -10,6 +10,17 @@ export type ProductDepartment =
   | 'Home & Lifestyle'
   | 'Mobile & Gaming Gear';
 
+export interface ProductCouponOffer {
+  id: string;
+  code: string;
+  badgeText: string;
+  subtitle: string;
+  type: 'percent' | 'flat';
+  value: number;
+  minSpend: number;
+  maxCap: number;
+}
+
 export interface MarketplaceProduct {
   id: string;
   title: string;
@@ -24,12 +35,16 @@ export interface MarketplaceProduct {
   soldCount: number;
   stockRemaining: number;
   totalStock: number;
+  maxOrderQuota?: number; // Max units per customer order
   freeShipping: boolean;
   codEligible: boolean;
   storeName: string;
   imageUrl: string;
+  extraImages?: string[]; // Additional gallery photos added by Admin
   specs: string[];
   description: string;
+  specialOfferText?: string; // Product-specific special offer / bundle perks
+  productCoupons?: ProductCouponOffer[]; // Product-specific coupons added by Admin
 }
 
 export const HERO_BANNER_IMAGE = resolveAssetUrl(

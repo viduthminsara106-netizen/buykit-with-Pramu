@@ -23,6 +23,7 @@ import {
   QrCode,
   CalendarClock,
   X,
+  ArrowLeft,
 } from 'lucide-react';
 import { DealTier, formatLKR } from '../data/catalog';
 import { resolveAssetUrl } from '../utils/assetResolver';
@@ -37,6 +38,13 @@ import {
   PayHerePaymentIntentResponse,
 } from '../utils/payhereCheckout';
 import { getTranslations } from '../utils/i18n';
+import { LankaQrPaymentPanel } from './LankaQrPaymentPanel';
+import {
+  KokoPaymentPanel,
+  KokoOrderSession,
+  KOKO_MIN_ORDER_LKR,
+  KOKO_MAX_ORDER_LKR,
+} from './KokoPaymentPanel';
 
 export interface CheckoutLineItem {
   id: string;
@@ -143,6 +151,7 @@ interface DarazAliCheckoutViewProps {
   selectedCountryCode: string;
   selectedLanguageCode?: string;
   savedCards: SavedPaymentCard[];
+  availableCoupons?: CouponOption[];
   paymentMethod: 'cod' | 'card_express';
   checkoutSubmitting: boolean;
   onSelectPaymentMethod: (method: 'cod' | 'card_express') => void;
@@ -161,6 +170,7 @@ interface DarazAliCheckoutViewProps {
     paymentMethodLabel: string;
     suppressAutoRedirect?: boolean;
   }) => Promise<void>;
+  onBackToCart?: () => void;
   onViewPlacedOrderTracking?: () => void;
 }
 
@@ -197,6 +207,7 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
   selectedCountryCode,
   selectedLanguageCode = 'en',
   savedCards,
+  availableCoupons = AVAILABLE_CHECKOUT_COUPONS,
   checkoutSubmitting,
   onSelectPaymentMethod,
   onUpdateItemQuantity,
@@ -206,8 +217,13 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
   onContinueShopping,
   onOpenAuthModal,
   onConfirmCheckoutOrder,
+  onBackToCart,
   onViewPlacedOrderTracking,
 }) => {
+  const effectiveCoupons =
+    availableCoupons && availableCoupons.length > 0
+      ? availableCoupons
+      : AVAILABLE_CHECKOUT_COUPONS;
   const t = getTranslations(selectedLanguageCode);
   const [selectedCouponId, setSelectedCouponId] = useState<string>('coupon_buykit5000');
   const [isCouponPickerOpen, setIsCouponPickerOpen] = useState<boolean>(false);
@@ -222,6 +238,8 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
   );
   const [payhereIntent, setPayhereIntent] = useState<PayHerePaymentIntentResponse | null>(null);
   const [isPayHereGatewayModalOpen, setIsPayHereGatewayModalOpen] = useState<boolean>(false);
+  const [kokoSession, setKokoSession] = useState<KokoOrderSession | null>(null);
+  const [isKokoModalOpen, setIsKokoModalOpen] = useState<boolean>(false);
   const [creatingIntent, setCreatingIntent] = useState<boolean>(false);
   const [gatewayOtpCode, setGatewayOtpCode] = useState<string>('482910');
   const [gatewayCvv, setGatewayCvv] = useState<string>('842');
@@ -243,8 +261,8 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
   const storefrontDealSavings = Math.max(0, itemsOriginalTotal - itemsSubtotal);
 
   const activeCoupon =
-    AVAILABLE_CHECKOUT_COUPONS.find((c) => c.id === selectedCouponId) ||
-    AVAILABLE_CHECKOUT_COUPONS[0];
+    effectiveCoupons.find((c) => c.id === selectedCouponId) ||
+    effectiveCoupons[0];
 
   // Calculate Coupon Discount in LKR
   const couponDiscountAmount = useMemo(() => {
@@ -294,14 +312,14 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
   const handleApplyCustomCoupon = () => {
     const clean = customCouponInput.trim().toUpperCase();
     if (!clean) return;
-    const matched = AVAILABLE_CHECKOUT_COUPONS.find(
+    const matched = effectiveCoupons.find(
       (c) => c.code.toUpperCase() === clean
     );
     if (matched) {
       setSelectedCouponId(matched.id);
       setCustomCouponInput('');
-    } else {
-      setSelectedCouponId('coupon_mega2500');
+    } else if (effectiveCoupons[0]) {
+      setSelectedCouponId(effectiveCoupons[0].id);
       setCustomCouponInput('');
     }
   };
@@ -383,11 +401,94 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
     });
   };
 
-  // Detect PayHere return_url callback (?payment=success&orderId=...)
+  const handleCompleteKokoPaymentCallback = async (details: {
+    orderId: string;
+    trnId: string;
+    firstInstallmentLkr: number;
+    totalAmountLkr: number;
+  }) => {
+    const resolvedPaymentLabel = `Koko Pay 3x 0% · 1st Paid ${formatLKR(
+      details.firstInstallmentLkr
+    )} (Ref: ${details.trnId})`;
+
+    const snapshotDetails: OrderPlacedConfirmationDetails = {
+      orderId: details.orderId,
+      paymentId: details.trnId,
+      amountPaid: details.totalAmountLkr,
+      originalTotal: itemsOriginalTotal,
+      totalSavings: totalCombinedSavings,
+      couponCode: activeCoupon.code,
+      couponDiscount: couponDiscountAmount,
+      deliveryFee: deliveryFeeAmount,
+      deliveryMethodLabel,
+      paymentMethodLabel: resolvedPaymentLabel,
+      recipientName: fullName || 'BuyKit Customer',
+      shippingAddressText: `${shippingAddress}, ${cityDistrict} (${postalCode})`,
+      phoneText: phone,
+      itemsSnapshot: [...items],
+      placedAtText: new Date().toLocaleString('en-LK', {
+        dateStyle: 'medium',
+        timeStyle: 'short',
+      }),
+    };
+
+    setIsKokoModalOpen(false);
+    setKokoSession(null);
+    setOrderPlacedModalData(snapshotDetails);
+
+    await onConfirmCheckoutOrder({
+      finalPayableAmount: details.totalAmountLkr,
+      couponCode: activeCoupon.code,
+      couponDiscount: couponDiscountAmount,
+      deliveryFee: deliveryFeeAmount,
+      deliveryMethodLabel,
+      paymentMethodLabel: resolvedPaymentLabel,
+      suppressAutoRedirect: true,
+    });
+  };
+
+  // Detect PayHere return_url callback (?payment=success&orderId=...) OR Koko return_url (?kokoPayment=success&sessionId=...)
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const paymentStatus = params.get('payment');
     const callbackOrderId = params.get('orderId');
+    const kokoPaymentStatus = params.get('kokoPayment');
+    const kokoSessionId = params.get('sessionId');
+
+    if (kokoPaymentStatus === 'success' && kokoSessionId && !orderPlacedModalData) {
+      // Never trust return_url alone — verify Koko session status on the server first
+      fetch(`/api/koko/session/${encodeURIComponent(kokoSessionId)}`)
+        .then((r) => r.json())
+        .then((data) => {
+          if (data?.status === 'paid' && data?.trnId) {
+            const firstInst =
+              data.installments?.[0]?.amountLkr ?? Math.round((data.amountLkr || finalPayableAmount) / 3);
+            handleCompleteKokoPaymentCallback({
+              orderId: data.orderId || callbackOrderId || `BK-KOKO-${Date.now()}`,
+              trnId: data.trnId,
+              firstInstallmentLkr: firstInst,
+              totalAmountLkr: data.amountLkr || finalPayableAmount,
+            });
+          } else {
+            setGatewayError(
+              'Koko payment is still awaiting server callback verification. Please check your Koko app or try again.'
+            );
+          }
+        })
+        .catch(() => {
+          setGatewayError('Unable to verify Koko payment status.');
+        })
+        .finally(() => {
+          window.history.replaceState({}, document.title, window.location.pathname);
+        });
+      return;
+    }
+
+    if (kokoPaymentStatus === 'cancelled') {
+      setGatewayError('Koko payment was cancelled before approval.');
+      window.history.replaceState({}, document.title, window.location.pathname);
+      return;
+    }
 
     if (paymentStatus === 'success' && callbackOrderId && !orderPlacedModalData) {
       setOrderPlacedModalData({
@@ -476,7 +577,58 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
       return;
     }
 
-    // For Card / LankaQR / Koko, create a signed PayHere PaymentIntent on the backend
+    // For Koko 3x 0% Installments, initialize a server-signed Koko session
+    if (selectedPaymentOption === 'koko_installments') {
+      if (finalPayableAmount < KOKO_MIN_ORDER_LKR || finalPayableAmount > KOKO_MAX_ORDER_LKR) {
+        setGatewayError(
+          `Koko 3x 0% Installments is available for orders between ${formatLKR(
+            KOKO_MIN_ORDER_LKR
+          )} and ${formatLKR(KOKO_MAX_ORDER_LKR)}.`
+        );
+        return;
+      }
+
+      setCreatingIntent(true);
+      setGatewayError('');
+      try {
+        const kokoOrderId = `BKKOKO-${Date.now()}`;
+        const nameParts = (fullName || 'BuyKit Customer').trim().split(/\s+/);
+        const firstName = nameParts[0] || 'BuyKit';
+        const lastName = nameParts.slice(1).join(' ') || 'Customer';
+        const itemsTitle = items
+          .map((i) => `${i.title} x${i.quantity}`)
+          .join(', ')
+          .slice(0, 140);
+
+        const resp = await fetch('/api/koko/create-order', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            orderId: kokoOrderId,
+            amountLkr: finalPayableAmount,
+            firstName,
+            lastName,
+            email: email || 'customer@buykit.lk',
+            phone: phone || '0771234567',
+            description: itemsTitle || `BuyKit Order ${kokoOrderId}`,
+          }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          throw new Error(data.error || 'Could not initialize Koko checkout session.');
+        }
+
+        setKokoSession(data as KokoOrderSession);
+        setIsKokoModalOpen(true);
+      } catch (err: unknown) {
+        setGatewayError(err instanceof Error ? err.message : 'Koko checkout initialization failed.');
+      } finally {
+        setCreatingIntent(false);
+      }
+      return;
+    }
+
+    // For Card / LankaQR, create a signed PayHere PaymentIntent on the backend
     setCreatingIntent(true);
     setGatewayError('');
     try {
@@ -552,6 +704,16 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          {onBackToCart && (
+            <button
+              type="button"
+              onClick={onBackToCart}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-extrabold text-slate-800 transition-colors hover:border-[#F85606] hover:text-[#F85606]"
+            >
+              <ArrowLeft className="h-3.5 w-3.5" />
+              <span>Back to Cart</span>
+            </button>
+          )}
           <button
             type="button"
             onClick={() => onOpenSettingsTab('country_language')}
@@ -636,8 +798,6 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
                         />
                         {currentCountry.name} ({currentCountry.shippingZone})
                       </span>
-                      <span>·</span>
-                      <span>Hub: {selectedHubName}</span>
                       <span>·</span>
                       <span>{email}</span>
                     </div>
@@ -828,7 +988,7 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
                     Select any available BuyKit Coupon below to switch your discount:
                   </p>
                   <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                    {AVAILABLE_CHECKOUT_COUPONS.map((coup) => {
+                    {effectiveCoupons.map((coup) => {
                       const isSelected = coup.id === selectedCouponId;
                       const eligible = itemsSubtotal >= coup.minSpend;
                       return (
@@ -995,7 +1155,7 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
                   </div>
                 </button>
 
-                {/* Payment 4: LankaQR / Bank Transfer */}
+                {/* Payment 4: LankaQR / Scan QR Code to Pay */}
                 <button
                   type="button"
                   onClick={() => handleSelectPaymentType('lanka_qr')}
@@ -1008,10 +1168,10 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
                   <QrCode className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" />
                   <div>
                     <p className="text-xs font-extrabold text-slate-950">
-                      LankaQR / Instant Bank Transfer
+                      Scan QR Code (LankaQR / Bank QR)
                     </p>
                     <p className="mt-0.5 text-[11px] text-slate-500">
-                      Scan QR with any Sri Lankan banking app
+                      Scan QR with BOC, People&apos;s, Sampath, Q+, Solo, FriMi or Genie
                     </p>
                   </div>
                 </button>
@@ -1073,6 +1233,36 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
                       );
                     })}
                   </div>
+                </div>
+              )}
+
+              {/* Live Koko 3x 0% Installment Schedule Preview when Koko is selected */}
+              {selectedPaymentOption === 'koko_installments' && (
+                <KokoPaymentPanel
+                  variant="inline"
+                  amountLkr={finalPayableAmount}
+                  customerPhone={phone}
+                  isSubmitting={creatingIntent || checkoutSubmitting}
+                  onLaunchKokoCheckout={handleTriggerCheckoutOrder}
+                />
+              )}
+
+              {/* Live Scannable LankaQR Code Preview when QR Payment is selected */}
+              {selectedPaymentOption === 'lanka_qr' && (
+                <LankaQrPaymentPanel
+                  variant="inline"
+                  orderId={`BKQR-${totalUnits}X-${Math.round(finalPayableAmount)}`}
+                  amountLkr={finalPayableAmount}
+                  merchantId="1228450"
+                  merchantName="BUYKIT WITH PRAMU"
+                  customerPhone={phone}
+                  onOpenFullQrModal={handleTriggerCheckoutOrder}
+                />
+              )}
+
+              {gatewayError && !isPayHereGatewayModalOpen && !isKokoModalOpen && (
+                <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-xs font-semibold text-red-700">
+                  {gatewayError}
                 </div>
               )}
             </div>
@@ -1294,17 +1484,23 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
          ========================================================= */}
       {isPayHereGatewayModalOpen && payhereIntent && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-xs">
-          <div className="w-full max-w-lg overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
-            {/* Top PayHere Gateway Header */}
+          <div className="max-h-[92vh] w-full max-w-lg overflow-y-auto rounded-2xl border border-slate-200 bg-white shadow-2xl">
+            {/* Top PayHere / LankaQR Gateway Header */}
             <div className="flex items-center justify-between bg-gradient-to-r from-slate-950 via-slate-900 to-[#F85606] px-5 py-4 text-white">
               <div className="flex items-center gap-2.5">
                 <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-white/15">
-                  <CreditCard className="h-5 w-5 text-orange-200" />
+                  {selectedPaymentOption === 'lanka_qr' ? (
+                    <QrCode className="h-5 w-5 text-amber-200" />
+                  ) : (
+                    <CreditCard className="h-5 w-5 text-orange-200" />
+                  )}
                 </div>
                 <div>
                   <div className="flex items-center gap-2">
                     <h3 className="font-display text-sm font-extrabold tracking-wide uppercase">
-                      PayHere Sri Lanka · 3D-Secure Checkout
+                      {selectedPaymentOption === 'lanka_qr'
+                        ? 'LANKAQR · Scan QR Code to Pay'
+                        : 'PayHere Sri Lanka · 3D-Secure Checkout'}
                     </h3>
                     <span className="rounded bg-emerald-500/25 px-2 py-0.5 font-mono text-[10px] font-bold text-emerald-200">
                       {payhereIntent.sandbox ? 'SANDBOX' : 'LIVE'}
@@ -1326,181 +1522,267 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
             </div>
 
             <div className="space-y-4 p-5">
-              {/* Signed PaymentIntent Summary from Backend */}
-              <div className="rounded-xl border border-orange-200 bg-[#FFF8F4] p-3.5">
-                <div className="flex items-baseline justify-between">
-                  <span className="text-xs font-bold text-slate-700">
-                    Amount to Charge Card:
-                  </span>
-                  <span className="font-mono text-xl font-extrabold text-[#F85606]">
-                    LKR {Number(payhereIntent.amount).toLocaleString('en-LK', {
-                      minimumFractionDigits: 2,
-                    })}
-                  </span>
-                </div>
-                <div className="mt-2 space-y-1 border-t border-orange-200/70 pt-2 font-mono text-[11px] text-slate-600">
-                  <div className="flex justify-between">
-                    <span>Merchant ID:</span>
-                    <span className="font-bold text-slate-900">{payhereIntent.merchant_id}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Selected Method:</span>
-                    <span className="font-sans font-bold text-slate-900">
-                      {paymentMethodLabel}
-                    </span>
-                  </div>
-                  <div className="flex justify-between gap-2">
-                    <span className="shrink-0">Server MD5 Hash:</span>
-                    <span className="truncate font-bold text-emerald-700">
-                      {payhereIntent.hash}
-                    </span>
-                  </div>
-                </div>
-              </div>
+              {selectedPaymentOption === 'lanka_qr' ? (
+                <>
+                  <LankaQrPaymentPanel
+                    variant="modal"
+                    orderId={payhereIntent.order_id}
+                    amountLkr={finalPayableAmount}
+                    merchantId={payhereIntent.merchant_id}
+                    merchantName="BUYKIT WITH PRAMU"
+                    customerPhone={payhereIntent.phone}
+                    onAutoConfirmedPaid={async (verifiedResult) => {
+                      setProcessingGatewayConfirm(true);
+                      setGatewayError('');
+                      try {
+                        const verifiedPaymentId =
+                          verifiedResult.paymentId || `LQR-${Date.now().toString().slice(-8)}`;
 
-              {/* Card & 3D-Secure Bank SMS OTP Verification Inputs */}
-              <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-extrabold text-slate-900">
-                    {selectedCardObj
-                      ? `${selectedCardObj.brand} ${selectedCardObj.cardType} (•••• ${selectedCardObj.last4})`
-                      : 'Visa / Mastercard 3D-Secure Authorization'}
-                  </span>
-                  <span className="rounded bg-emerald-100 px-2 py-0.5 text-[10px] font-extrabold text-emerald-800">
-                    3D-Secure OTP Active
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="mb-1 block text-[11px] font-bold text-slate-700">
-                      Card CVV / CVC
-                    </label>
-                    <input
-                      type="password"
-                      maxLength={4}
-                      value={gatewayCvv}
-                      onChange={(e) => setGatewayCvv(e.target.value)}
-                      placeholder="123"
-                      className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-xs font-bold text-slate-900 focus:border-[#F85606] focus:outline-none"
-                    />
-                  </div>
-                  <div>
-                    <label className="mb-1 block text-[11px] font-bold text-slate-700">
-                      Bank 3D-Secure SMS OTP
-                    </label>
-                    <input
-                      type="text"
-                      maxLength={6}
-                      value={gatewayOtpCode}
-                      onChange={(e) => setGatewayOtpCode(e.target.value)}
-                      placeholder="6-digit OTP"
-                      className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-xs font-bold tracking-widest text-slate-900 focus:border-[#F85606] focus:outline-none"
-                    />
-                  </div>
-                </div>
-
-                <p className="text-[11px] text-slate-500">
-                  SMS OTP sent to <strong>{payhereIntent.phone}</strong>. Once verified, PayHere notifies{' '}
-                  <code>/api/payhere/notify</code> and settles funds to your Sri Lankan bank account.
-                </p>
-              </div>
-
-              {gatewayError && (
-                <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-xs font-semibold text-red-700">
-                  {gatewayError}
-                </div>
-              )}
-
-              {/* Action Buttons */}
-              <div className="space-y-2 pt-1">
-                <button
-                  type="button"
-                  disabled={processingGatewayConfirm || checkoutSubmitting}
-                  onClick={async () => {
-                    if (!gatewayOtpCode.trim() || gatewayOtpCode.trim().length < 4) {
-                      setGatewayError('Please enter the 6-digit Bank SMS OTP code.');
-                      return;
-                    }
-                    setProcessingGatewayConfirm(true);
-                    setGatewayError('');
-                    try {
-                      const generatedPaymentId = `PH-${Date.now().toString().slice(-8)}`;
-                      // Notify our backend webhook endpoint (/api/payhere/notify) and confirm order in Firestore
-                      await fetch('/api/payhere/notify', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                          merchant_id: payhereIntent.merchant_id,
-                          order_id: payhereIntent.order_id,
-                          payhere_amount: payhereIntent.amount,
-                          payhere_currency: payhereIntent.currency,
-                          status_code: '2',
-                          payment_id: generatedPaymentId,
-                        }),
-                      }).catch(() => undefined);
-
-                      await handleCompletePayHereSuccessCallback(
-                        payhereIntent.order_id,
-                        generatedPaymentId
-                      );
-                    } finally {
-                      setProcessingGatewayConfirm(false);
-                    }
-                  }}
-                  className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[#F85606] px-5 py-3.5 text-sm font-extrabold text-white shadow-md transition-colors hover:bg-[#d94800] disabled:opacity-50"
-                >
-                  <ShieldCheck className="h-4 w-4" />
-                  <span>
-                    {processingGatewayConfirm
-                      ? 'Verifying 3D-Secure OTP & Settling Payment...'
-                      : `Authorize & Pay ${formatLKR(finalPayableAmount)} Now`}
-                  </span>
-                </button>
-
-                <div className="flex items-center justify-between gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!window.payhere) {
-                        setGatewayError('PayHere JS SDK is blocked or not loaded in this browser.');
-                        return;
+                        await handleCompletePayHereSuccessCallback(
+                          payhereIntent.order_id,
+                          verifiedPaymentId
+                        );
+                      } finally {
+                        setProcessingGatewayConfirm(false);
                       }
-                      launchOfficialPayHerePopup(payhereIntent, {
-                        onSuccess: async (completedOrderId) => {
-                          await handleCompletePayHereSuccessCallback(completedOrderId);
-                        },
-                        onCancel: () => {
-                          setGatewayError('PayHere popup was closed before completing payment.');
-                        },
-                        onError: (errMsg) => {
-                          setGatewayError(
-                            `PayHere SDK: ${errMsg}. (Add your live PAYHERE_MERCHANT_ID & PAYHERE_MERCHANT_SECRET in .env to use live popup)`
-                          );
-                        },
-                      });
                     }}
-                    className="rounded-xl border border-slate-200 bg-slate-100 px-3.5 py-2 text-xs font-bold text-slate-700 hover:bg-slate-200"
-                  >
-                    Open Official PayHere.lk Popup
-                  </button>
+                  />
 
-                  <button
-                    type="button"
-                    onClick={() => setIsPayHereGatewayModalOpen(false)}
-                    className="rounded-xl px-3.5 py-2 text-xs font-bold text-slate-500 hover:bg-slate-100 hover:text-slate-800"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
+                  {gatewayError && (
+                    <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-xs font-semibold text-red-700">
+                      {gatewayError}
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-between gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!window.payhere) {
+                          setGatewayError('PayHere JS SDK is blocked or not loaded in this browser.');
+                          return;
+                        }
+                        launchOfficialPayHerePopup(payhereIntent, {
+                          onSuccess: async (completedOrderId) => {
+                            await handleCompletePayHereSuccessCallback(completedOrderId);
+                          },
+                          onCancel: () => {
+                            setGatewayError('PayHere popup was closed before completing payment.');
+                          },
+                          onError: (errMsg) => {
+                            setGatewayError(
+                              `PayHere SDK: ${errMsg}. (Add your live PAYHERE_MERCHANT_ID & PAYHERE_MERCHANT_SECRET in .env to use live popup)`
+                            );
+                          },
+                        });
+                      }}
+                      className="rounded-xl border border-slate-200 bg-slate-100 px-3.5 py-2 text-xs font-bold text-slate-700 hover:bg-slate-200"
+                    >
+                      Open PayHere.lk QR Popup
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setIsPayHereGatewayModalOpen(false)}
+                      className="rounded-xl px-3.5 py-2 text-xs font-bold text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  {/* Signed PaymentIntent Summary from Backend */}
+                  <div className="rounded-xl border border-orange-200 bg-[#FFF8F4] p-3.5">
+                    <div className="flex items-baseline justify-between">
+                      <span className="text-xs font-bold text-slate-700">
+                        Amount to Charge Card:
+                      </span>
+                      <span className="font-mono text-xl font-extrabold text-[#F85606]">
+                        LKR {Number(payhereIntent.amount).toLocaleString('en-LK', {
+                          minimumFractionDigits: 2,
+                        })}
+                      </span>
+                    </div>
+                    <div className="mt-2 space-y-1 border-t border-orange-200/70 pt-2 font-mono text-[11px] text-slate-600">
+                      <div className="flex justify-between">
+                        <span>Merchant ID:</span>
+                        <span className="font-bold text-slate-900">{payhereIntent.merchant_id}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Selected Method:</span>
+                        <span className="font-sans font-bold text-slate-900">
+                          {paymentMethodLabel}
+                        </span>
+                      </div>
+                      <div className="flex justify-between gap-2">
+                        <span className="shrink-0">Server MD5 Hash:</span>
+                        <span className="truncate font-bold text-emerald-700">
+                          {payhereIntent.hash}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Card & 3D-Secure Bank SMS OTP Verification Inputs */}
+                  <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-extrabold text-slate-900">
+                        {selectedCardObj
+                          ? `${selectedCardObj.brand} ${selectedCardObj.cardType} (•••• ${selectedCardObj.last4})`
+                          : 'Visa / Mastercard 3D-Secure Authorization'}
+                      </span>
+                      <span className="rounded bg-emerald-100 px-2 py-0.5 text-[10px] font-extrabold text-emerald-800">
+                        3D-Secure OTP Active
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="mb-1 block text-[11px] font-bold text-slate-700">
+                          Card CVV / CVC
+                        </label>
+                        <input
+                          type="password"
+                          maxLength={4}
+                          value={gatewayCvv}
+                          onChange={(e) => setGatewayCvv(e.target.value)}
+                          placeholder="123"
+                          className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-xs font-bold text-slate-900 focus:border-[#F85606] focus:outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-[11px] font-bold text-slate-700">
+                          Bank 3D-Secure SMS OTP
+                        </label>
+                        <input
+                          type="text"
+                          maxLength={6}
+                          value={gatewayOtpCode}
+                          onChange={(e) => setGatewayOtpCode(e.target.value)}
+                          placeholder="6-digit OTP"
+                          className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-xs font-bold tracking-widest text-slate-900 focus:border-[#F85606] focus:outline-none"
+                        />
+                      </div>
+                    </div>
+
+                    <p className="text-[11px] text-slate-500">
+                      SMS OTP sent to <strong>{payhereIntent.phone}</strong>. Once verified, PayHere notifies{' '}
+                      <code>/api/payhere/notify</code> and settles funds to your Sri Lankan bank account.
+                    </p>
+                  </div>
+
+                  {gatewayError && (
+                    <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-xs font-semibold text-red-700">
+                      {gatewayError}
+                    </div>
+                  )}
+
+                  {/* Action Buttons */}
+                  <div className="space-y-2 pt-1">
+                    <button
+                      type="button"
+                      disabled={processingGatewayConfirm || checkoutSubmitting}
+                      onClick={async () => {
+                        if (!gatewayOtpCode.trim() || gatewayOtpCode.trim().length < 4) {
+                          setGatewayError('Please enter the 6-digit Bank SMS OTP code.');
+                          return;
+                        }
+                        setProcessingGatewayConfirm(true);
+                        setGatewayError('');
+                        try {
+                          const generatedPaymentId = `PH-${Date.now().toString().slice(-8)}`;
+                          // Notify our backend webhook endpoint (/api/payhere/notify) and confirm order in Firestore
+                          await fetch('/api/payhere/notify', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                              merchant_id: payhereIntent.merchant_id,
+                              order_id: payhereIntent.order_id,
+                              payhere_amount: payhereIntent.amount,
+                              payhere_currency: payhereIntent.currency,
+                              status_code: '2',
+                              payment_id: generatedPaymentId,
+                            }),
+                          }).catch(() => undefined);
+
+                          await handleCompletePayHereSuccessCallback(
+                            payhereIntent.order_id,
+                            generatedPaymentId
+                          );
+                        } finally {
+                          setProcessingGatewayConfirm(false);
+                        }
+                      }}
+                      className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[#F85606] px-5 py-3.5 text-sm font-extrabold text-white shadow-md transition-colors hover:bg-[#d94800] disabled:opacity-50"
+                    >
+                      <ShieldCheck className="h-4 w-4" />
+                      <span>
+                        {processingGatewayConfirm
+                          ? 'Verifying 3D-Secure OTP & Settling Payment...'
+                          : `Authorize & Pay ${formatLKR(finalPayableAmount)} Now`}
+                      </span>
+                    </button>
+
+                    <div className="flex items-center justify-between gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!window.payhere) {
+                            setGatewayError('PayHere JS SDK is blocked or not loaded in this browser.');
+                            return;
+                          }
+                          launchOfficialPayHerePopup(payhereIntent, {
+                            onSuccess: async (completedOrderId) => {
+                              await handleCompletePayHereSuccessCallback(completedOrderId);
+                            },
+                            onCancel: () => {
+                              setGatewayError('PayHere popup was closed before completing payment.');
+                            },
+                            onError: (errMsg) => {
+                              setGatewayError(
+                                `PayHere SDK: ${errMsg}. (Add your live PAYHERE_MERCHANT_ID & PAYHERE_MERCHANT_SECRET in .env to use live popup)`
+                              );
+                            },
+                          });
+                        }}
+                        className="rounded-xl border border-slate-200 bg-slate-100 px-3.5 py-2 text-xs font-bold text-slate-700 hover:bg-slate-200"
+                      >
+                        Open Official PayHere.lk Popup
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setIsPayHereGatewayModalOpen(false)}
+                        className="rounded-xl px-3.5 py-2 text-xs font-bold text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </div>
       )}
 
       {/* =========================================================
-          PAYHERE PAYMENT CALLBACK SUCCESS — "ORDER PLACED" CONFIRMATION MODAL
+          KOKO PAY (3x 0% BNPL) CHECKOUT MODAL (Live RSA Redirect OR Sandbox OTP)
+         ========================================================= */}
+      {isKokoModalOpen && kokoSession && (
+        <KokoPaymentPanel
+          variant="modal"
+          amountLkr={finalPayableAmount}
+          customerPhone={phone}
+          session={kokoSession}
+          onCloseModal={() => setIsKokoModalOpen(false)}
+          onPaymentVerified={handleCompleteKokoPaymentCallback}
+        />
+      )}
+
+      {/* =========================================================
+          PAYMENT CALLBACK SUCCESS — "ORDER PLACED" CONFIRMATION MODAL
          ========================================================= */}
       {orderPlacedModalData && (
         <div
@@ -1518,7 +1800,15 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
 
               <span className="inline-flex items-center gap-1.5 rounded-md bg-white/20 px-3 py-1 font-mono text-[11px] font-extrabold tracking-wider text-emerald-100 uppercase">
                 <ShieldCheck className="h-3.5 w-3.5" />
-                <span>PayHere Payment Callback Verified</span>
+                <span>
+                  {orderPlacedModalData.paymentId.startsWith('KOKO')
+                    ? 'Koko RSA-256 Payment Verified'
+                    : orderPlacedModalData.paymentId.startsWith('LQR')
+                    ? 'LANKAQR Payment Verified'
+                    : orderPlacedModalData.paymentId.startsWith('COD')
+                    ? 'Cash on Delivery Confirmed'
+                    : 'PayHere Payment Callback Verified'}
+                </span>
               </span>
 
               <h2

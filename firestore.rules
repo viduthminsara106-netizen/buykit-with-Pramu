@@ -31,10 +31,16 @@ service cloud.firestore {
       return isVerifiedUser() && request.auth.uid == userId;
     }
 
+    function emailToAdminKey(email) {
+      return email.lower().replace('[^a-z0-9]', '_');
+    }
+
     function isAdmin() {
       return isVerifiedUser() && (
+        request.auth.token.email.lower() == 'viduthminsara106@gmail.com' ||
+        request.auth.token.email.lower() == 'pramudithamanuja853@gmail.com' ||
         exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
-        request.auth.token.email == 'viduthminsara106@gmail.com'
+        exists(/databases/$(database)/documents/admin_emails/$(emailToAdminKey(request.auth.token.email)))
       );
     }
 
@@ -94,7 +100,7 @@ service cloud.firestore {
     function isValidOrderRecord(data) {
       return data.keys().hasAll(['userId', 'orderNumber', 'summaryTitle', 'itemCount', 'totalAmount', 'paymentMethod', 'pickupHubName', 'status', 'createdAt', 'updatedAt']) &&
         data.keys().hasOnly(['userId', 'orderNumber', 'summaryTitle', 'itemCount', 'totalAmount', 'paymentMethod', 'pickupHubName', 'status', 'createdAt', 'updatedAt']) &&
-        data.userId is string && isValidId(data.userId) && data.userId == request.auth.uid &&
+        data.userId is string && isValidId(data.userId) && (data.userId == request.auth.uid || isAdmin()) &&
         data.orderNumber is string && data.orderNumber.size() >= 4 && data.orderNumber.size() <= 40 && data.orderNumber.matches('^[a-zA-Z0-9_\\-]+$') &&
         data.summaryTitle is string && data.summaryTitle.size() >= 1 && data.summaryTitle.size() <= 200 &&
         data.itemCount is number && data.itemCount >= 1 && data.itemCount <= 500 &&
@@ -184,10 +190,140 @@ service cloud.firestore {
         data.updatedAt is timestamp;
     }
 
-    // Admins lookup collection (read-only for owner/admin)
+    function isValidAdminEmailRecord(data) {
+      return data.keys().hasAll(['adminEmailId', 'email', 'addedByEmail', 'role', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['adminEmailId', 'email', 'addedByEmail', 'role', 'createdAt', 'updatedAt']) &&
+        data.adminEmailId is string && isValidId(data.adminEmailId) &&
+        data.email is string && data.email.size() >= 5 && data.email.size() <= 160 &&
+        data.addedByEmail is string && data.addedByEmail.size() >= 5 && data.addedByEmail.size() <= 160 &&
+        data.role is string && data.role == 'admin' &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidAdminNotification(data) {
+      return data.keys().hasAll(['notificationId', 'type', 'title', 'message', 'actorUserId', 'actorName', 'actorEmail', 'relatedId', 'read', 'createdAt']) &&
+        data.keys().hasOnly(['notificationId', 'type', 'title', 'message', 'actorUserId', 'actorName', 'actorEmail', 'relatedId', 'read', 'createdAt']) &&
+        data.notificationId is string && isValidId(data.notificationId) &&
+        data.type is string && data.type in ['cart_add', 'order_placed', 'review_added', 'question_asked', 'sale_started', 'sale_ended', 'promo_updated', 'system'] &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 140 &&
+        data.message is string && data.message.size() >= 1 && data.message.size() <= 500 &&
+        data.actorUserId is string && isValidId(data.actorUserId) && (data.actorUserId == request.auth.uid || isAdmin()) &&
+        data.actorName is string && data.actorName.size() >= 1 && data.actorName.size() <= 80 &&
+        data.actorEmail is string && data.actorEmail.size() <= 160 &&
+        data.relatedId is string && data.relatedId.size() <= 128 &&
+        data.read is bool &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidAdminOrderRecord(data) {
+      return data.keys().hasAll(['orderId', 'userId', 'orderNumber', 'customerName', 'customerEmail', 'customerPhone', 'shippingAddress', 'summaryTitle', 'itemCount', 'totalAmount', 'paymentMethod', 'paymentLabel', 'pickupHubName', 'status', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['orderId', 'userId', 'orderNumber', 'customerName', 'customerEmail', 'customerPhone', 'shippingAddress', 'summaryTitle', 'itemCount', 'totalAmount', 'paymentMethod', 'paymentLabel', 'pickupHubName', 'status', 'createdAt', 'updatedAt']) &&
+        data.orderId is string && isValidId(data.orderId) &&
+        data.userId is string && isValidId(data.userId) && (data.userId == request.auth.uid || isAdmin()) &&
+        data.orderNumber is string && data.orderNumber.size() >= 4 && data.orderNumber.size() <= 40 && data.orderNumber.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.customerName is string && data.customerName.size() >= 1 && data.customerName.size() <= 80 &&
+        data.customerEmail is string && data.customerEmail.size() <= 160 &&
+        data.customerPhone is string && data.customerPhone.size() <= 40 &&
+        data.shippingAddress is string && data.shippingAddress.size() <= 300 &&
+        data.summaryTitle is string && data.summaryTitle.size() >= 1 && data.summaryTitle.size() <= 200 &&
+        data.itemCount is number && data.itemCount >= 1 && data.itemCount <= 500 &&
+        data.totalAmount is number && data.totalAmount >= 0 && data.totalAmount <= 500000000 &&
+        data.paymentMethod is string && data.paymentMethod in ['cod', 'card_express'] &&
+        data.paymentLabel is string && data.paymentLabel.size() >= 1 && data.paymentLabel.size() <= 140 &&
+        data.pickupHubName is string && data.pickupHubName.size() >= 2 && data.pickupHubName.size() <= 120 &&
+        data.status is string && data.status in ['processing', 'preparing', 'dispatched', 'in_transit', 'shipped', 'delivered', 'cancelled'] &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // Admins UID lookup collection (read-only for owner/admin)
     match /admins/{adminId} {
       allow get: if isVerifiedUser() && isValidId(adminId) && request.auth.uid == adminId;
       allow list, create, update, delete: if false;
+    }
+
+    // Dynamic Admin Gmail Collection (Root Admin viduthminsara106@gmail.com & added admins)
+    match /admin_emails/{adminEmailId} {
+      allow get: if isVerifiedUser() && isValidId(adminEmailId) && (adminEmailId == emailToAdminKey(request.auth.token.email) || isAdmin());
+      allow list: if isAdmin();
+
+      allow create: if isAdmin() &&
+        isValidId(adminEmailId) &&
+        isValidAdminEmailRecord(incoming()) &&
+        incoming().adminEmailId == adminEmailId &&
+        incoming().adminEmailId == emailToAdminKey(incoming().email) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isAdmin() &&
+        isValidId(adminEmailId) &&
+        isValidAdminEmailRecord(incoming()) &&
+        incoming().adminEmailId == existing().adminEmailId &&
+        incoming().email == existing().email &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time;
+
+      allow delete: if isAdmin() &&
+        isValidId(adminEmailId) &&
+        existing().email.lower() != 'viduthminsara106@gmail.com' &&
+        existing().email.lower() != 'pramudithamanuja853@gmail.com';
+    }
+
+    // Real-Time Admin Notifications Collection (Strictly Admin-only reads & updates)
+    match /admin_notifications/{notificationId} {
+      allow get: if isAdmin() && isValidId(notificationId);
+      allow list: if isAdmin();
+
+      allow create: if isVerifiedUser() &&
+        isValidId(notificationId) &&
+        isValidAdminNotification(incoming()) &&
+        incoming().notificationId == notificationId &&
+        incoming().actorUserId == request.auth.uid &&
+        incoming().read == false &&
+        incoming().createdAt == request.time;
+
+      allow update: if isAdmin() &&
+        isValidId(notificationId) &&
+        isValidAdminNotification(incoming()) &&
+        incoming().notificationId == existing().notificationId &&
+        incoming().actorUserId == existing().actorUserId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['read']);
+
+      allow delete: if isAdmin() && isValidId(notificationId);
+    }
+
+    // Global Admin Order Tracking Collection (All users' orders visible & manageable by Admin)
+    match /admin_orders/{orderId} {
+      allow get: if isValidId(orderId) && (isAdmin() || (isVerifiedUser() && existing().userId == request.auth.uid));
+      allow list: if isAdmin();
+
+      allow create: if isVerifiedUser() &&
+        isValidId(orderId) &&
+        isValidAdminOrderRecord(incoming()) &&
+        incoming().orderId == orderId &&
+        incoming().userId == request.auth.uid &&
+        incoming().status in ['processing', 'preparing'] &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isValidId(orderId) &&
+        isValidAdminOrderRecord(incoming()) &&
+        incoming().orderId == existing().orderId &&
+        incoming().userId == existing().userId &&
+        incoming().orderNumber == existing().orderNumber &&
+        incoming().totalAmount == existing().totalAmount &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])) ||
+          (isVerifiedUser() && existing().userId == request.auth.uid &&
+            (existing().status == 'processing' || existing().status == 'preparing') &&
+            incoming().status == 'cancelled' &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']))
+        );
+
+      allow delete: if isAdmin() && isValidId(orderId);
     }
 
     // 1. User Public Profile
@@ -208,7 +344,6 @@ service cloud.firestore {
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time && (
           isAdmin() ||
-          // Action: UpdateProfileOrClaimDeal
           incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoUrl', 'newUserDealClaimed', 'updatedAt'])
         );
 
@@ -236,7 +371,6 @@ service cloud.firestore {
           incoming().updatedAt == request.time &&
           userParentExists(userId) && (
             isAdmin() ||
-            // Action: UpdateShippingInfo
             incoming().diff(existing()).affectedKeys().hasOnly(['email', 'phone', 'shippingAddress', 'postalCode', 'updatedAt'])
           );
 
@@ -266,17 +400,16 @@ service cloud.firestore {
           incoming().updatedAt == request.time &&
           userParentExists(userId) && (
             isAdmin() ||
-            // Action: UpdateQuantity
             incoming().diff(existing()).affectedKeys().hasOnly(['quantity', 'price', 'dealType', 'updatedAt'])
           );
 
         allow delete: if isOwner(userId) && isValidId(userId) && isValidId(itemId) && userParentExists(userId);
       }
 
-      // 4. Orders Subcollection
+      // 4. Orders Subcollection (Admin can read & update status of any customer's order)
       match /orders/{orderId} {
         allow get: if (isOwner(userId) || isAdmin()) && isValidId(userId) && isValidId(orderId) && userParentExists(userId);
-        allow list: if isOwner(userId) && existing().userId == request.auth.uid;
+        allow list: if (isOwner(userId) && existing().userId == request.auth.uid) || isAdmin();
 
         allow create: if isOwner(userId) &&
           isValidId(userId) &&
@@ -287,7 +420,7 @@ service cloud.firestore {
           incoming().updatedAt == request.time &&
           userParentExists(userId);
 
-        allow update: if isOwner(userId) &&
+        allow update: if (isOwner(userId) || isAdmin()) &&
           isValidId(userId) &&
           isValidId(orderId) &&
           isValidOrderRecord(incoming()) &&
@@ -297,21 +430,16 @@ service cloud.firestore {
           incoming().createdAt == existing().createdAt &&
           incoming().updatedAt == request.time &&
           userParentExists(userId) && (
-            isAdmin() ||
-            // Action: CancelProcessingOrder (Terminal State Gate: only 'processing' or 'preparing' orders can be cancelled by buyer)
+            (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])) ||
             ((existing().status == 'processing' || existing().status == 'preparing') &&
               incoming().status == 'cancelled' &&
-              incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])) ||
-            // Action: AdvanceOrderTrackingStage (Terminal State Gate: locked once 'delivered' or 'cancelled')
-            (!(existing().status in ['delivered', 'cancelled']) &&
-              incoming().status in ['preparing', 'dispatched', 'in_transit', 'delivered'] &&
               incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']))
           );
 
         allow delete: if isAdmin() && isValidId(userId) && isValidId(orderId);
       }
 
-      // 5. Wishlist Subcollection (Saved Products for Registered/Authenticated Users)
+      // 5. Wishlist Subcollection
       match /wishlist/{itemId} {
         allow get: if isOwner(userId) && isValidId(userId) && isValidId(itemId) && userParentExists(userId);
         allow list: if isOwner(userId) && existing().userId == request.auth.uid;
@@ -334,7 +462,6 @@ service cloud.firestore {
           incoming().updatedAt == request.time &&
           userParentExists(userId) && (
             isAdmin() ||
-            // Action: RefreshWishlistPricing
             incoming().diff(existing()).affectedKeys().hasOnly(['price', 'originalPrice', 'dealType', 'updatedAt'])
           );
 
@@ -342,7 +469,7 @@ service cloud.firestore {
       }
     }
 
-    // 6. Product Reviews Collection (5-Star Ratings, Text, Images, Videos & Voice Notes)
+    // 6. Product Reviews Collection
     match /product_reviews/{reviewId} {
       allow get: if isValidId(reviewId) && existing().visibility == 'public';
       allow list: if existing().visibility == 'public';
@@ -366,7 +493,6 @@ service cloud.firestore {
         incoming().updatedAt == request.time &&
         userParentExists(request.auth.uid) && (
           isAdmin() ||
-          // Action: EditOwnReview
           (existing().userId == request.auth.uid &&
             incoming().diff(existing()).affectedKeys().hasOnly(['rating', 'comment', 'imageUrl', 'videoUrl', 'voiceUrl', 'updatedAt']))
         );
@@ -374,7 +500,7 @@ service cloud.firestore {
       allow delete: if isVerifiedUser() && isValidId(reviewId) && (existing().userId == request.auth.uid || isAdmin());
     }
 
-    // 7. Review Replies Collection (Users Replying to Other Reviews)
+    // 7. Review Replies Collection
     match /review_replies/{replyId} {
       allow get: if isValidId(replyId) && existing().visibility == 'public';
       allow list: if existing().visibility == 'public';
@@ -401,7 +527,6 @@ service cloud.firestore {
         userParentExists(request.auth.uid) &&
         reviewParentExists(existing().reviewId) && (
           isAdmin() ||
-          // Action: EditOwnReply
           (existing().userId == request.auth.uid &&
             incoming().diff(existing()).affectedKeys().hasOnly(['comment', 'updatedAt']))
         );
@@ -409,7 +534,7 @@ service cloud.firestore {
       allow delete: if isVerifiedUser() && isValidId(replyId) && (existing().userId == request.auth.uid || isAdmin());
     }
 
-    // 8. Product Questions Collection (Ask Questions Product by Product)
+    // 8. Product Questions Collection (Shoppers can ask questions)
     match /product_questions/{questionId} {
       allow get: if isValidId(questionId) && existing().visibility == 'public';
       allow list: if existing().visibility == 'public';
@@ -433,7 +558,6 @@ service cloud.firestore {
         incoming().updatedAt == request.time &&
         userParentExists(request.auth.uid) && (
           isAdmin() ||
-          // Action: EditOwnQuestion
           (existing().userId == request.auth.uid &&
             incoming().diff(existing()).affectedKeys().hasOnly(['questionText', 'updatedAt']))
         );
@@ -441,21 +565,20 @@ service cloud.firestore {
       allow delete: if isVerifiedUser() && isValidId(questionId) && (existing().userId == request.auth.uid || isAdmin());
     }
 
-    // 9. Question Answers Collection (Answers to Product Questions)
+    // 9. Question Answers Collection (STRICTLY ADMIN-ONLY ANSWERS)
     match /question_answers/{answerId} {
       allow get: if isValidId(answerId) && existing().visibility == 'public';
       allow list: if existing().visibility == 'public';
 
-      allow create: if isVerifiedUser() &&
+      allow create: if isAdmin() &&
         isValidId(answerId) &&
         isValidQuestionAnswer(incoming()) &&
         incoming().answerId == answerId &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time &&
-        userParentExists(request.auth.uid) &&
         questionParentExists(incoming().questionId);
 
-      allow update: if isVerifiedUser() &&
+      allow update: if isAdmin() &&
         isValidId(answerId) &&
         isValidQuestionAnswer(incoming()) &&
         incoming().answerId == existing().answerId &&
@@ -465,15 +588,10 @@ service cloud.firestore {
         incoming().visibility == existing().visibility &&
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time &&
-        userParentExists(request.auth.uid) &&
-        questionParentExists(existing().questionId) && (
-          isAdmin() ||
-          // Action: EditOwnAnswer
-          (existing().userId == request.auth.uid &&
-            incoming().diff(existing()).affectedKeys().hasOnly(['answerText', 'updatedAt']))
-        );
+        questionParentExists(existing().questionId) &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['answerText', 'updatedAt']);
 
-      allow delete: if isVerifiedUser() && isValidId(answerId) && (existing().userId == request.auth.uid || isAdmin());
+      allow delete: if isAdmin() && isValidId(answerId);
     }
   }
 }

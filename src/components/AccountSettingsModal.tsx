@@ -581,7 +581,7 @@ export const AccountSettingsModal: React.FC<AccountSettingsModalProps> = ({
                           Shipping Country: {currentCountry.name} ({currentCountry.shippingZone})
                         </p>
                         <p className="text-[11px] text-slate-500">
-                          Pickup / Dispatch Hub: <strong>{selectedHubName}</strong>
+                          Islandwide Express &amp; Doorstep Delivery
                         </p>
                       </div>
                     </div>
@@ -665,15 +665,6 @@ export const AccountSettingsModal: React.FC<AccountSettingsModalProps> = ({
                         Office
                       </button>
                     </div>
-
-                    <button
-                      type="button"
-                      onClick={onOpenPickupMap}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-orange-200 bg-[#FFF3EB] px-3 py-1.5 text-xs font-bold text-[#F85606] hover:bg-orange-100"
-                    >
-                      <MapPin className="h-3.5 w-3.5" />
-                      <span>Select Pickup Hub on Map ({selectedHubName})</span>
-                    </button>
                   </div>
 
                   <div className="flex items-center justify-end gap-3 border-t border-slate-200 pt-4">

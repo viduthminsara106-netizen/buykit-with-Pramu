@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { ShoppingBag } from 'lucide-react';
 
 // Static Vite module imports guarantee every image is bundled into dist/assets/ on Vercel builds
@@ -30,7 +30,7 @@ export const BUNDLED_IMAGE_MAP: Record<string, string> = {
 };
 
 /**
- * Resolves any image path (including legacy `/src/assets/images/...` or persisted Firestore URLs)
+ * Resolves any image path (including legacy `/src/assets/images/...` or persisted URLs)
  * to the Vite-bundled asset URL so images work 100% reliably on Vercel and local dev.
  */
 export function resolveAssetUrl(rawUrl?: string | null): string {
@@ -39,7 +39,12 @@ export function resolveAssetUrl(rawUrl?: string | null): string {
   if (!trimmed) return heroMarketplaceImg;
 
   // Data URLs or external https URLs pass through directly
-  if (trimmed.startsWith('data:') || trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+  if (
+    trimmed.startsWith('data:') ||
+    trimmed.startsWith('blob:') ||
+    trimmed.startsWith('http://') ||
+    trimmed.startsWith('https://')
+  ) {
     return trimmed;
   }
 
@@ -68,7 +73,11 @@ export function detectSlowConnection(): boolean {
   }).connection;
   if (!conn) return false;
   if (conn.saveData) return true;
-  if (conn.effectiveType === 'slow-2g' || conn.effectiveType === '2g' || conn.effectiveType === '3g') {
+  if (
+    conn.effectiveType === 'slow-2g' ||
+    conn.effectiveType === '2g' ||
+    conn.effectiveType === '3g'
+  ) {
     return true;
   }
   if (typeof conn.downlink === 'number' && conn.downlink > 0 && conn.downlink < 1.5) {
@@ -88,9 +97,7 @@ export interface OptimizedImageProps {
 /**
  * Progressive, low-connection friendly Image component:
  * - Resolves `/src/assets/images/*` via Vite bundle + `/public` fallback for Vercel
- * - Uses native `loading="lazy"` and `decoding="async"` to save bandwidth on offscreen cards
- * - Renders an instant lightweight shimmer placeholder until the progressive JPEG finishes decoding
- * - Provides a clean fallback if offline
+ * - Handles cached/preloaded images immediately via `imgRef.current.complete`
  */
 export const OptimizedImage: React.FC<OptimizedImageProps> = ({
   src,
@@ -99,6 +106,7 @@ export const OptimizedImage: React.FC<OptimizedImageProps> = ({
   priority = false,
 }) => {
   const resolvedSrc = resolveAssetUrl(src);
+  const imgRef = useRef<HTMLImageElement | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [failed, setFailed] = useState(false);
   const [usedFallbackPath, setUsedFallbackPath] = useState(false);
@@ -106,7 +114,10 @@ export const OptimizedImage: React.FC<OptimizedImageProps> = ({
   useEffect(() => {
     setFailed(false);
     setUsedFallbackPath(false);
-  }, [src]);
+    if (imgRef.current && imgRef.current.complete && imgRef.current.naturalWidth > 0) {
+      setLoaded(true);
+    }
+  }, [src, resolvedSrc]);
 
   // Extract fallback public path if bundled path ever fails
   const getPublicFallbackUrl = (input: string): string => {
@@ -115,16 +126,15 @@ export const OptimizedImage: React.FC<OptimizedImageProps> = ({
         return `/assets/images/${fileName}`;
       }
     }
-    return input;
+    return heroMarketplaceImg;
   };
 
   if (failed || !resolvedSrc) {
     return (
       <div
-        className={`flex flex-col items-center justify-center bg-gradient-to-br from-slate-100 via-stone-100 to-orange-50/60 p-3 text-center ${className}`}
+        className={`flex flex-col items-center justify-center bg-gradient-to-br from-slate-100 via-stone-100 to-orange-50/60 p-1.5 text-center ${className}`}
       >
-        <ShoppingBag className="mb-1 h-6 w-6 text-[#F85606]/70" />
-        <span className="line-clamp-2 text-[11px] font-semibold text-slate-600">{alt}</span>
+        <ShoppingBag className="h-4 w-4 text-[#F85606]/70" />
       </div>
     );
   }
@@ -136,10 +146,11 @@ export const OptimizedImage: React.FC<OptimizedImageProps> = ({
       {!loaded && (
         <div
           aria-hidden="true"
-          className="absolute inset-0 animate-pulse bg-gradient-to-r from-[#F4F3EF] via-[#EAE7DF] to-[#F4F3EF]"
+          className="absolute inset-0 z-0 animate-pulse bg-gradient-to-r from-[#F4F3EF] via-[#EAE7DF] to-[#F4F3EF]"
         />
       )}
       <img
+        ref={imgRef}
         src={activeSrc}
         alt={alt}
         loading={priority ? 'eager' : 'lazy'}
@@ -154,8 +165,8 @@ export const OptimizedImage: React.FC<OptimizedImageProps> = ({
             setFailed(true);
           }
         }}
-        className={`${className} transition-opacity duration-200 ${
-          loaded ? 'opacity-100' : 'opacity-90'
+        className={`relative z-10 ${className} transition-opacity duration-200 ${
+          loaded ? 'opacity-100' : 'opacity-95'
         }`}
       />
     </div>

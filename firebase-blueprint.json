@@ -568,6 +568,223 @@
         }
       },
       "required": ["answerId", "questionId", "productId", "userId", "userName", "answerText", "visibility", "createdAt", "updatedAt"]
+    },
+    "AdminEmailRecord": {
+      "title": "AdminEmailRecord",
+      "description": "Authorized administrator Gmail record granting access to the BuyKit Admin Dashboard.",
+      "type": "object",
+      "properties": {
+        "adminEmailId": {
+          "type": "string",
+          "description": "Sanitized lowercase email key used as document ID.",
+          "minLength": 3,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Lowercase Gmail address granted admin permissions.",
+          "minLength": 5,
+          "maxLength": 160
+        },
+        "addedByEmail": {
+          "type": "string",
+          "format": "email",
+          "description": "Admin email that added this administrator.",
+          "minLength": 5,
+          "maxLength": 160
+        },
+        "role": {
+          "type": "string",
+          "description": "Role identifier for the administrator.",
+          "enum": ["admin"],
+          "minLength": 5,
+          "maxLength": 5
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when admin access was granted."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of last update."
+        }
+      },
+      "required": ["adminEmailId", "email", "addedByEmail", "role", "createdAt", "updatedAt"]
+    },
+    "AdminNotificationRecord": {
+      "title": "AdminNotificationRecord",
+      "description": "Real-time storefront event notification delivered to the Admin Dashboard Notifications tab.",
+      "type": "object",
+      "properties": {
+        "notificationId": {
+          "type": "string",
+          "description": "Unique notification identifier.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "type": {
+          "type": "string",
+          "description": "Category of storefront event.",
+          "enum": ["cart_add", "order_placed", "review_added", "question_asked", "sale_started", "sale_ended", "promo_updated", "system"],
+          "minLength": 1,
+          "maxLength": 30
+        },
+        "title": {
+          "type": "string",
+          "description": "Short notification headline.",
+          "minLength": 1,
+          "maxLength": 140
+        },
+        "message": {
+          "type": "string",
+          "description": "Detailed notification body.",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "actorUserId": {
+          "type": "string",
+          "description": "UID of the user or admin triggering the event.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "actorName": {
+          "type": "string",
+          "description": "Display name of the actor.",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "actorEmail": {
+          "type": "string",
+          "description": "Email address of the actor if available.",
+          "minLength": 0,
+          "maxLength": 160
+        },
+        "relatedId": {
+          "type": "string",
+          "description": "Related product, order, review, or sale ID.",
+          "minLength": 0,
+          "maxLength": 128
+        },
+        "read": {
+          "type": "boolean",
+          "description": "Whether an admin has marked this notification as read."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the notification occurred."
+        }
+      },
+      "required": ["notificationId", "type", "title", "message", "actorUserId", "actorName", "actorEmail", "relatedId", "read", "createdAt"]
+    },
+    "AdminOrderRecord": {
+      "title": "AdminOrderRecord",
+      "description": "Global admin-accessible order tracking record mirroring customer orders with full shipping and status controls.",
+      "type": "object",
+      "properties": {
+        "orderId": {
+          "type": "string",
+          "description": "Matching order document ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the customer.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "orderNumber": {
+          "type": "string",
+          "description": "Order reference code.",
+          "minLength": 4,
+          "maxLength": 40,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "customerName": {
+          "type": "string",
+          "description": "Recipient full name.",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "customerEmail": {
+          "type": "string",
+          "description": "Customer email address.",
+          "minLength": 0,
+          "maxLength": 160
+        },
+        "customerPhone": {
+          "type": "string",
+          "description": "Customer delivery phone number.",
+          "minLength": 0,
+          "maxLength": 40
+        },
+        "shippingAddress": {
+          "type": "string",
+          "description": "Customer delivery address.",
+          "minLength": 0,
+          "maxLength": 300
+        },
+        "summaryTitle": {
+          "type": "string",
+          "description": "Ordered items summary.",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "itemCount": {
+          "type": "number",
+          "description": "Total units ordered."
+        },
+        "totalAmount": {
+          "type": "number",
+          "description": "Final order amount in LKR."
+        },
+        "paymentMethod": {
+          "type": "string",
+          "description": "Payment method key.",
+          "enum": ["cod", "card_express"],
+          "minLength": 1,
+          "maxLength": 30
+        },
+        "paymentLabel": {
+          "type": "string",
+          "description": "Human-readable payment label including LANKAQR or PayHere reference.",
+          "minLength": 1,
+          "maxLength": 140
+        },
+        "pickupHubName": {
+          "type": "string",
+          "description": "Selected delivery method or pickup hub.",
+          "minLength": 2,
+          "maxLength": 120
+        },
+        "status": {
+          "type": "string",
+          "description": "Live order tracking stage.",
+          "enum": ["processing", "preparing", "dispatched", "in_transit", "shipped", "delivered", "cancelled"],
+          "minLength": 1,
+          "maxLength": 30
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when order was placed."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of last status update."
+        }
+      },
+      "required": ["orderId", "userId", "orderNumber", "customerName", "customerEmail", "customerPhone", "shippingAddress", "summaryTitle", "itemCount", "totalAmount", "paymentMethod", "paymentLabel", "pickupHubName", "status", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -605,7 +822,19 @@
     },
     "/question_answers/{answerId}": {
       "schema": { "$ref": "#/entities/QuestionAnswer" },
-      "description": "Stores answers to customer product questions."
+      "description": "Stores official admin-only answers to customer product questions."
+    },
+    "/admin_emails/{adminEmailId}": {
+      "schema": { "$ref": "#/entities/AdminEmailRecord" },
+      "description": "Stores dynamic list of Gmail addresses granted Admin Dashboard privileges."
+    },
+    "/admin_notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/AdminNotificationRecord" },
+      "description": "Stores real-time storefront activity notifications visible exclusively to admins."
+    },
+    "/admin_orders/{orderId}": {
+      "schema": { "$ref": "#/entities/AdminOrderRecord" },
+      "description": "Stores global order tracking records across all customers for Admin Dashboard fulfillment management."
     }
   }
 }

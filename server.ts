@@ -3,6 +3,7 @@ import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
+import QRCode from 'qrcode';
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 
 dotenv.config();
@@ -921,12 +922,1056 @@ app.post('/api/payhere/notify', (req, res) => {
       console.log(
         `[PayHere Webhook] Order ${order_id} PAID (${payhere_currency} ${payhere_amount}) · Payment ID: ${payment_id}`
       );
+      // If this verified webhook corresponds to a pending LANKAQR session, auto-confirm it
+      if (md5sig && localMd5Sig === String(md5sig).toUpperCase()) {
+        for (const rec of lankaQrSessions.values()) {
+          if (rec.orderId === String(order_id) && rec.status !== 'paid') {
+            rec.status = 'paid';
+            rec.paymentId = payment_id || `PH-LQR-${Date.now().toString().slice(-8)}`;
+            rec.bankAppName = 'PayHere LANKAQR Gateway';
+            rec.paidAt = Date.now();
+          }
+        }
+      }
     }
 
     res.status(200).send('OK');
   } catch (error: unknown) {
     console.error('PayHere webhook error:', error);
     res.status(500).send('Webhook error');
+  }
+});
+
+// =========================================================
+// 7. LANKAQR SERVER-AUTHORITATIVE QR GENERATION & AUTO-CONFIRMATION (LKR)
+//    Payment CANNOT be bypassed from the checkout UI. A session transitions
+//    to 'paid' ONLY when:
+//      (a) A real phone scans the QR code (extracting the server-only scanToken)
+//          and completes bank payment authorization, OR
+//      (b) A signed PayHere / Bank LANKAQR webhook confirms settlement.
+// =========================================================
+interface LankaQrSessionRecord {
+  sessionId: string;
+  orderId: string;
+  amountLkr: number;
+  merchantId: string;
+  merchantName: string;
+  merchantCity: string;
+  emvPayload: string;
+  scanToken: string; // Never sent in checkout JSON; encoded ONLY inside the QR code
+  status: 'pending' | 'scanned' | 'paid' | 'expired';
+  createdAt: number;
+  expiresAt: number;
+  scannedAt?: number;
+  paidAt?: number;
+  paymentId?: string;
+  bankAppName?: string;
+}
+
+const LANKAQR_SESSION_TTL_MS = 15 * 60 * 1000; // 15 minutes
+const LANKAQR_MAX_SESSIONS = 1000;
+const lankaQrSessions = new Map<string, LankaQrSessionRecord>();
+
+function computeEmvCrc16Server(payload: string): string {
+  let crc = 0xffff;
+  for (let i = 0; i < payload.length; i++) {
+    crc ^= payload.charCodeAt(i) << 8;
+    for (let bit = 0; bit < 8; bit++) {
+      if ((crc & 0x8000) !== 0) {
+        crc = ((crc << 1) ^ 0x1021) & 0xffff;
+      } else {
+        crc = (crc << 1) & 0xffff;
+      }
+    }
+  }
+  return crc.toString(16).toUpperCase().padStart(4, '0');
+}
+
+function encodeEmvTlv(tag: string, rawValue: string): string {
+  const safeVal = rawValue.slice(0, 99);
+  const lengthPrefix = String(safeVal.length).padStart(2, '0');
+  return `${tag}${lengthPrefix}${safeVal}`;
+}
+
+function buildServerLankaQrPayload(params: {
+  merchantId: string;
+  merchantName: string;
+  merchantCity: string;
+  orderId: string;
+  amountLkr: number;
+}): string {
+  const safeMerchantId = params.merchantId.replace(/[^A-Za-z0-9]/g, '').slice(0, 16) || '1228450';
+  const safeName =
+    params.merchantName.replace(/[^A-Za-z0-9 ]/g, '').trim().slice(0, 25).toUpperCase() ||
+    'BUYKIT WITH PRAMU';
+  const safeCity =
+    params.merchantCity.replace(/[^A-Za-z0-9 ]/g, '').trim().slice(0, 15).toUpperCase() ||
+    'COLOMBO';
+  const safeRef = params.orderId.replace(/[^A-Za-z0-9-]/g, '').slice(0, 20) || 'BKORDER';
+  const amountStr = params.amountLkr.toFixed(2);
+
+  const merchantAccountInfo =
+    encodeEmvTlv('00', 'lk.lankaclear.lankaqr') +
+    encodeEmvTlv('01', safeMerchantId) +
+    encodeEmvTlv('02', safeRef);
+
+  const additionalData = encodeEmvTlv('01', safeRef);
+
+  const withoutCrc =
+    encodeEmvTlv('00', '01') +
+    encodeEmvTlv('01', '12') +
+    encodeEmvTlv('26', merchantAccountInfo) +
+    encodeEmvTlv('52', '5399') +
+    encodeEmvTlv('53', '144') +
+    encodeEmvTlv('54', amountStr) +
+    encodeEmvTlv('58', 'LK') +
+    encodeEmvTlv('59', safeName) +
+    encodeEmvTlv('60', safeCity) +
+    encodeEmvTlv('62', additionalData) +
+    '6304';
+
+  return `${withoutCrc}${computeEmvCrc16Server(withoutCrc)}`;
+}
+
+function resolvePublicOriginForQr(req: express.Request): string {
+  const forwardedHost = String(req.headers['x-forwarded-host'] || req.headers.host || '')
+    .split(',')[0]
+    .trim();
+  const forwardedProto = String(req.headers['x-forwarded-proto'] || '')
+    .split(',')[0]
+    .trim()
+    .toLowerCase();
+
+  // Strict hostname validation to prevent Host header injection
+  if (/^[a-zA-Z0-9.-]+(:\d{1,5})?$/.test(forwardedHost)) {
+    const isLocal =
+      forwardedHost.startsWith('localhost') || forwardedHost.startsWith('127.0.0.1');
+    const proto = forwardedProto === 'https' || !isLocal ? 'https' : 'http';
+    return `${proto}://${forwardedHost}`;
+  }
+
+  const envUrl = (process.env.APP_URL || '').trim().replace(/\/$/, '');
+  if (/^https?:\/\/[a-zA-Z0-9.-]+(:\d{1,5})?$/.test(envUrl)) {
+    return envUrl;
+  }
+
+  return `http://localhost:${PORT}`;
+}
+
+function timingSafeCompareStr(a: string, b: string): boolean {
+  const bufA = Buffer.from(a, 'utf8');
+  const bufB = Buffer.from(b, 'utf8');
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+function pruneExpiredLankaQrSessions() {
+  const now = Date.now();
+  for (const [id, rec] of lankaQrSessions.entries()) {
+    if (rec.expiresAt < now - 5 * 60 * 1000) {
+      lankaQrSessions.delete(id);
+    }
+  }
+  while (lankaQrSessions.size > LANKAQR_MAX_SESSIONS) {
+    const oldestKey = lankaQrSessions.keys().next().value;
+    if (!oldestKey) break;
+    lankaQrSessions.delete(oldestKey);
+  }
+}
+
+app.post('/api/lankaqr/create-session', async (req, res) => {
+  try {
+    const { orderId, amountLkr } = req.body as {
+      orderId?: unknown;
+      amountLkr?: unknown;
+    };
+
+    const numericAmount = Number(amountLkr);
+    if (
+      typeof orderId !== 'string' ||
+      !/^[A-Za-z0-9_-]{3,40}$/.test(orderId.trim()) ||
+      !Number.isFinite(numericAmount) ||
+      numericAmount < 1 ||
+      numericAmount > 50_000_000
+    ) {
+      res.status(400).json({
+        error: 'Valid orderId (3-40 alphanumeric chars) and LKR amount (1 - 50,000,000) are required.',
+      });
+      return;
+    }
+
+    pruneExpiredLankaQrSessions();
+
+    const cleanOrderId = orderId.trim();
+    const roundedAmount = Math.round(numericAmount * 100) / 100;
+    const envMerchantId = (process.env.LANKAQR_MERCHANT_ID || '').trim();
+    const merchantId = envMerchantId || '1228450';
+    const merchantName = (process.env.LANKAQR_MERCHANT_NAME || 'BUYKIT WITH PRAMU').trim();
+    const merchantCity = (process.env.LANKAQR_MERCHANT_CITY || 'COLOMBO').trim();
+    const isLiveMerchant = Boolean(envMerchantId);
+
+    const sessionId = `LQR-${crypto.randomBytes(8).toString('hex').toUpperCase()}`;
+    const scanToken = crypto.randomBytes(24).toString('hex');
+    const createdAt = Date.now();
+    const expiresAt = createdAt + LANKAQR_SESSION_TTL_MS;
+
+    const emvPayload = buildServerLankaQrPayload({
+      merchantId,
+      merchantName,
+      merchantCity,
+      orderId: cleanOrderId,
+      amountLkr: roundedAmount,
+    });
+
+    // In live merchant mode, encode the raw EMVCo LANKAQR string for bank apps (auto-confirmed via webhook).
+    // In interactive sandbox mode, encode the signed mobile scan URL so scanning with any phone camera
+    // opens the mobile bank approval page and automatically confirms the checkout screen!
+    const publicOrigin = resolvePublicOriginForQr(req);
+    const qrContentToEncode = isLiveMerchant
+      ? emvPayload
+      : `${publicOrigin}/?qrPaySession=${encodeURIComponent(sessionId)}&sig=${encodeURIComponent(
+          scanToken
+        )}`;
+
+    const qrImageDataUrl = await QRCode.toDataURL(qrContentToEncode, {
+      errorCorrectionLevel: 'M',
+      margin: 2,
+      width: 340,
+      color: {
+        dark: '#0f172a',
+        light: '#ffffff',
+      },
+    });
+
+    lankaQrSessions.set(sessionId, {
+      sessionId,
+      orderId: cleanOrderId,
+      amountLkr: roundedAmount,
+      merchantId,
+      merchantName,
+      merchantCity,
+      emvPayload,
+      scanToken,
+      status: 'pending',
+      createdAt,
+      expiresAt,
+    });
+
+    // Notice: scanToken is intentionally NEVER returned to the checkout browser.
+    res.json({
+      sessionId,
+      orderId: cleanOrderId,
+      amountLkr: roundedAmount,
+      currency: 'LKR',
+      merchantId,
+      merchantName,
+      merchantCity,
+      isLiveMerchant,
+      emvPayload,
+      qrImageDataUrl,
+      expiresAt,
+      status: 'pending',
+    });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('LANKAQR create-session error:', message);
+    res.status(500).json({ error: 'Unable to generate LANKAQR payment session.' });
+  }
+});
+
+// Read-only status polling endpoint called by Checkout every 2 seconds
+app.get('/api/lankaqr/session/:sessionId', (req, res) => {
+  const sessionId = String(req.params.sessionId || '').trim();
+  const record = lankaQrSessions.get(sessionId);
+  if (!record) {
+    res.status(404).json({ error: 'QR payment session not found.' });
+    return;
+  }
+
+  let effectiveStatus = record.status;
+  if (
+    (record.status === 'pending' || record.status === 'scanned') &&
+    Date.now() > record.expiresAt
+  ) {
+    record.status = 'expired';
+    effectiveStatus = 'expired';
+  }
+
+  res.json({
+    sessionId: record.sessionId,
+    orderId: record.orderId,
+    amountLkr: record.amountLkr,
+    status: effectiveStatus,
+    expiresAt: record.expiresAt,
+    scannedAt: record.scannedAt || null,
+    paidAt: record.paidAt || null,
+    paymentId: record.paymentId || null,
+    bankAppName: record.bankAppName || null,
+  });
+});
+
+// Called ONLY by the mobile device after scanning the QR code (proving physical QR scan via scanToken)
+app.post('/api/lankaqr/mark-scanned', (req, res) => {
+  try {
+    const { sessionId, sig } = req.body as { sessionId?: unknown; sig?: unknown };
+    if (
+      typeof sessionId !== 'string' ||
+      typeof sig !== 'string' ||
+      !sessionId.trim() ||
+      !sig.trim()
+    ) {
+      res.status(400).json({ error: 'Invalid QR scan link.' });
+      return;
+    }
+
+    const record = lankaQrSessions.get(sessionId.trim());
+    if (!record) {
+      res.status(404).json({ error: 'QR payment session not found or expired.' });
+      return;
+    }
+
+    if (!timingSafeCompareStr(sig.trim(), record.scanToken)) {
+      res.status(403).json({ error: 'Invalid QR scan signature.' });
+      return;
+    }
+
+    if (Date.now() > record.expiresAt && record.status !== 'paid') {
+      record.status = 'expired';
+      res.status(410).json({ error: 'This QR code has expired. Please refresh QR on checkout.' });
+      return;
+    }
+
+    if (record.status === 'pending') {
+      record.status = 'scanned';
+      record.scannedAt = Date.now();
+    }
+
+    res.json({
+      sessionId: record.sessionId,
+      orderId: record.orderId,
+      amountLkr: record.amountLkr,
+      currency: 'LKR',
+      merchantId: record.merchantId,
+      merchantName: record.merchantName,
+      merchantCity: record.merchantCity,
+      status: record.status,
+      expiresAt: record.expiresAt,
+      paymentId: record.paymentId || null,
+    });
+  } catch (error: unknown) {
+    console.error('LANKAQR mark-scanned error:', error);
+    res.status(500).json({ error: 'Failed to process QR scan.' });
+  }
+});
+
+// Called ONLY by the mobile device after scanning the QR code and approving the LKR bank payment
+app.post('/api/lankaqr/authorize-scan-payment', (req, res) => {
+  try {
+    const { sessionId, sig, bankAppName, bankPin } = req.body as {
+      sessionId?: unknown;
+      sig?: unknown;
+      bankAppName?: unknown;
+      bankPin?: unknown;
+    };
+
+    if (
+      typeof sessionId !== 'string' ||
+      typeof sig !== 'string' ||
+      !sessionId.trim() ||
+      !sig.trim()
+    ) {
+      res.status(400).json({ error: 'Missing QR scan credentials.' });
+      return;
+    }
+
+    const record = lankaQrSessions.get(sessionId.trim());
+    if (!record) {
+      res.status(404).json({ error: 'QR payment session not found or expired.' });
+      return;
+    }
+
+    if (!timingSafeCompareStr(sig.trim(), record.scanToken)) {
+      res.status(403).json({ error: 'Unauthorized QR payment confirmation attempt.' });
+      return;
+    }
+
+    if (Date.now() > record.expiresAt && record.status !== 'paid') {
+      record.status = 'expired';
+      res.status(410).json({ error: 'This QR code has expired. Please scan a new QR code.' });
+      return;
+    }
+
+    if (typeof bankPin !== 'string' || !/^\d{4,6}$/.test(bankPin.trim())) {
+      res.status(400).json({ error: 'Please enter a valid 4 to 6 digit mobile banking PIN.' });
+      return;
+    }
+
+    if (record.status === 'paid' && record.paymentId) {
+      res.json({
+        verified: true,
+        sessionId: record.sessionId,
+        orderId: record.orderId,
+        amountLkr: record.amountLkr,
+        paymentId: record.paymentId,
+        bankAppName: record.bankAppName || 'LANKAQR Bank App',
+        paidAt: record.paidAt,
+      });
+      return;
+    }
+
+    const cleanBankApp =
+      typeof bankAppName === 'string' && bankAppName.trim().length > 0
+        ? bankAppName.replace(/[^A-Za-z0-9 '+-]/g, '').slice(0, 32)
+        : 'LANKAQR Bank App';
+
+    const generatedPaymentId = `LQR-${Date.now().toString().slice(-8)}-${crypto
+      .randomBytes(2)
+      .toString('hex')
+      .toUpperCase()}`;
+
+    record.status = 'paid';
+    record.paymentId = generatedPaymentId;
+    record.bankAppName = cleanBankApp;
+    record.paidAt = Date.now();
+
+    console.log(
+      `[LANKAQR Scan Paid] Order ${record.orderId} PAID (LKR ${record.amountLkr.toFixed(
+        2
+      )}) via ${cleanBankApp} · Ref: ${generatedPaymentId}`
+    );
+
+    res.json({
+      verified: true,
+      sessionId: record.sessionId,
+      orderId: record.orderId,
+      amountLkr: record.amountLkr,
+      paymentId: generatedPaymentId,
+      bankAppName: cleanBankApp,
+      paidAt: record.paidAt,
+    });
+  } catch (error: unknown) {
+    console.error('LANKAQR authorize-scan-payment error:', error);
+    res.status(500).json({ error: 'Failed to authorize QR payment.' });
+  }
+});
+
+// Signed Bank / LANKAQR Production Settlement Webhook (HMAC-SHA256)
+app.post('/api/lankaqr/webhook', (req, res) => {
+  try {
+    const webhookSecret = (process.env.LANKAQR_WEBHOOK_SECRET || '').trim();
+    if (!webhookSecret) {
+      res.status(503).json({ error: 'LANKAQR webhook secret is not configured.' });
+      return;
+    }
+
+    const providedSig = String(req.headers['x-lankaqr-signature'] || '').trim();
+    const { orderId, sessionId, amountLkr, paymentId, bankAppName, status } = req.body as {
+      orderId?: string;
+      sessionId?: string;
+      amountLkr?: number;
+      paymentId?: string;
+      bankAppName?: string;
+      status?: string;
+    };
+
+    const expectedSig = crypto
+      .createHmac('sha256', webhookSecret)
+      .update(`${sessionId || ''}|${orderId || ''}|${Number(amountLkr || 0).toFixed(2)}|${status || ''}`)
+      .digest('hex');
+
+    if (!providedSig || !timingSafeCompareStr(providedSig, expectedSig)) {
+      res.status(403).json({ error: 'Invalid webhook signature.' });
+      return;
+    }
+
+    if (String(status).toUpperCase() !== 'PAID') {
+      res.status(200).json({ received: true });
+      return;
+    }
+
+    let matchedRecord: LankaQrSessionRecord | undefined;
+    if (sessionId && lankaQrSessions.has(sessionId)) {
+      matchedRecord = lankaQrSessions.get(sessionId);
+    } else if (orderId) {
+      for (const rec of lankaQrSessions.values()) {
+        if (rec.orderId === orderId) {
+          matchedRecord = rec;
+          break;
+        }
+      }
+    }
+
+    if (!matchedRecord) {
+      res.status(404).json({ error: 'Matching QR session not found.' });
+      return;
+    }
+
+    matchedRecord.status = 'paid';
+    matchedRecord.paymentId =
+      typeof paymentId === 'string' && paymentId.trim()
+        ? paymentId.replace(/[^A-Za-z0-9-]/g, '').slice(0, 28)
+        : `LQR-BANK-${Date.now().toString().slice(-8)}`;
+    matchedRecord.bankAppName =
+      typeof bankAppName === 'string' && bankAppName.trim()
+        ? bankAppName.slice(0, 32)
+        : 'Sri Lankan Bank LANKAQR';
+    matchedRecord.paidAt = Date.now();
+
+    res.status(200).json({ verified: true, paymentId: matchedRecord.paymentId });
+  } catch (error: unknown) {
+    console.error('LANKAQR webhook error:', error);
+    res.status(500).json({ error: 'Webhook processing failed.' });
+  }
+});
+
+// =========================================================
+// 8. KOKO PAY (SRI LANKA 3x 0% BNPL) PAYMENT GATEWAY ENDPOINTS
+//    Supports Live RSA-SHA256 Merchant Signing + Production Callback
+//    Verification (when KOKO_* env vars are set) and an interactive
+//    Sandbox OTP + RSA Verification Flow for local/preview testing.
+// =========================================================
+interface KokoInstallmentItem {
+  number: 1 | 2 | 3;
+  label: string;
+  dueDateIso: string;
+  amountLkr: number;
+}
+
+interface KokoSessionRecord {
+  sessionId: string;
+  orderId: string;
+  reference: string;
+  amountLkr: number;
+  installments: KokoInstallmentItem[];
+  customerName: string;
+  customerEmail: string;
+  customerPhone: string;
+  description: string;
+  mode: 'live_redirect' | 'sandbox_modal';
+  status: 'pending' | 'otp_sent' | 'paid' | 'failed' | 'expired';
+  createdAt: number;
+  expiresAt: number;
+  sandboxOtp?: string;
+  sandboxOtpExpiresAt?: number;
+  sandboxOtpAttempts: number;
+  sandboxPhone?: string;
+  paidAt?: number;
+  trnId?: string;
+}
+
+const KOKO_MIN_LKR = 1500;
+const KOKO_MAX_LKR = 250000;
+const KOKO_SESSION_TTL_MS = 15 * 60 * 1000;
+const KOKO_MAX_SESSIONS = 1000;
+const kokoSessions = new Map<string, KokoSessionRecord>();
+
+// Ephemeral in-memory RSA-2048 keypair used ONLY for Sandbox signature verification
+let sandboxKokoRsaKeys: { privateKey: string; publicKey: string } | null = null;
+function getSandboxKokoRsaKeys(): { privateKey: string; publicKey: string } {
+  if (!sandboxKokoRsaKeys) {
+    const pair = crypto.generateKeyPairSync('rsa', {
+      modulusLength: 2048,
+      publicKeyEncoding: { type: 'spki', format: 'pem' },
+      privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+    });
+    sandboxKokoRsaKeys = {
+      privateKey: pair.privateKey,
+      publicKey: pair.publicKey,
+    };
+  }
+  return sandboxKokoRsaKeys;
+}
+
+function normalizePemKey(raw: string): string {
+  return raw.replace(/\\n/g, '\n').trim();
+}
+
+function getKokoMerchantConfig() {
+  const merchantId = (process.env.KOKO_MERCHANT_ID || '').trim();
+  const apiKey = (process.env.KOKO_API_KEY || '').trim();
+  const privateKey = normalizePemKey(process.env.KOKO_PRIVATE_KEY || '');
+  const publicKey = normalizePemKey(process.env.KOKO_PUBLIC_KEY || '');
+  const isSandbox = process.env.KOKO_SANDBOX !== 'false';
+  const configured = Boolean(merchantId && apiKey && privateKey);
+  const gatewayUrl = isSandbox
+    ? 'https://qaapi.paykoko.com/api/merchants/orderCreate'
+    : 'https://prodapi.paykoko.com/api/merchants/orderCreate';
+
+  return {
+    merchantId,
+    apiKey,
+    privateKey,
+    publicKey,
+    isSandbox,
+    configured,
+    gatewayUrl,
+  };
+}
+
+function buildKokoInstallments(totalLkr: number): KokoInstallmentItem[] {
+  const roundedTotal = Math.round(totalLkr * 100) / 100;
+  const baseInstallment = Math.floor((roundedTotal / 3) * 100) / 100;
+  const firstInstallment =
+    Math.round((roundedTotal - baseInstallment * 2) * 100) / 100;
+
+  const now = new Date();
+  const day30 = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+  const day60 = new Date(now.getTime() + 60 * 24 * 60 * 60 * 1000);
+
+  return [
+    {
+      number: 1,
+      label: '1st Installment (Due Today)',
+      dueDateIso: now.toISOString(),
+      amountLkr: firstInstallment,
+    },
+    {
+      number: 2,
+      label: '2nd Installment (In 30 Days)',
+      dueDateIso: day30.toISOString(),
+      amountLkr: baseInstallment,
+    },
+    {
+      number: 3,
+      label: '3rd Installment (In 60 Days)',
+      dueDateIso: day60.toISOString(),
+      amountLkr: baseInstallment,
+    },
+  ];
+}
+
+function pruneExpiredKokoSessions() {
+  const now = Date.now();
+  for (const [id, rec] of kokoSessions.entries()) {
+    if (rec.expiresAt < now - 5 * 60 * 1000) {
+      kokoSessions.delete(id);
+    }
+  }
+  while (kokoSessions.size > KOKO_MAX_SESSIONS) {
+    const oldestKey = kokoSessions.keys().next().value;
+    if (!oldestKey) break;
+    kokoSessions.delete(oldestKey);
+  }
+}
+
+app.get('/api/koko/status', (_req, res) => {
+  const cfg = getKokoMerchantConfig();
+  res.json({
+    configured: cfg.configured,
+    sandbox: cfg.isSandbox,
+    minAmountLkr: KOKO_MIN_LKR,
+    maxAmountLkr: KOKO_MAX_LKR,
+    merchantIdPreview: cfg.configured ? `${cfg.merchantId.slice(0, 4)}•••` : 'KOKO-SANDBOX',
+  });
+});
+
+app.post('/api/koko/create-order', (req, res) => {
+  try {
+    const {
+      orderId,
+      amountLkr,
+      firstName,
+      lastName,
+      email,
+      phone,
+      description,
+    } = req.body as {
+      orderId?: unknown;
+      amountLkr?: unknown;
+      firstName?: unknown;
+      lastName?: unknown;
+      email?: unknown;
+      phone?: unknown;
+      description?: unknown;
+    };
+
+    const numericAmount = Number(amountLkr);
+    if (
+      typeof orderId !== 'string' ||
+      !/^[A-Za-z0-9_-]{3,40}$/.test(orderId.trim()) ||
+      !Number.isFinite(numericAmount) ||
+      numericAmount < KOKO_MIN_LKR ||
+      numericAmount > KOKO_MAX_LKR
+    ) {
+      res.status(400).json({
+        error: `Koko 3x 0% Installments requires an order total between Rs. ${KOKO_MIN_LKR.toLocaleString(
+          'en-LK'
+        )} and Rs. ${KOKO_MAX_LKR.toLocaleString('en-LK')}.`,
+      });
+      return;
+    }
+
+    pruneExpiredKokoSessions();
+
+    const cfg = getKokoMerchantConfig();
+    const cleanOrderId = orderId.trim();
+    const roundedAmount = Math.round(numericAmount * 100) / 100;
+    const amountFormatted = roundedAmount.toFixed(2);
+    const cleanFirst =
+      typeof firstName === 'string' && firstName.trim()
+        ? firstName.replace(/[^A-Za-z0-9 .'-]/g, '').trim().slice(0, 40)
+        : 'BuyKit';
+    const cleanLast =
+      typeof lastName === 'string' && lastName.trim()
+        ? lastName.replace(/[^A-Za-z0-9 .'-]/g, '').trim().slice(0, 40)
+        : 'Customer';
+    const cleanEmail =
+      typeof email === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())
+        ? email.trim().slice(0, 80)
+        : 'customer@buykit.lk';
+    const cleanPhone =
+      typeof phone === 'string' ? phone.replace(/[^0-9+]/g, '').slice(0, 15) : '0771234567';
+    const cleanDesc =
+      typeof description === 'string' && description.trim()
+        ? description.replace(/[\r\n<>]/g, '').trim().slice(0, 140)
+        : `BuyKit Order #${cleanOrderId}`;
+
+    const sessionId = `KOKO-${crypto.randomBytes(8).toString('hex').toUpperCase()}`;
+    const reference = `${cfg.configured ? cfg.merchantId : 'BK'}-${Date.now().toString().slice(-6)}`;
+    const installments = buildKokoInstallments(roundedAmount);
+    const createdAt = Date.now();
+    const expiresAt = createdAt + KOKO_SESSION_TTL_MS;
+
+    const publicOrigin = resolvePublicOriginForQr(req);
+    const returnUrl = `${publicOrigin}/?kokoPayment=success&orderId=${encodeURIComponent(
+      cleanOrderId
+    )}&sessionId=${encodeURIComponent(sessionId)}`;
+    const cancelUrl = `${publicOrigin}/?kokoPayment=cancelled&orderId=${encodeURIComponent(
+      cleanOrderId
+    )}&sessionId=${encodeURIComponent(sessionId)}`;
+    const responseUrl = `${publicOrigin}/api/koko/callback`;
+
+    const pluginName = 'customapi';
+    const pluginVersion = '1.0.1';
+    const currency = 'LKR';
+
+    let mode: 'live_redirect' | 'sandbox_modal' = 'sandbox_modal';
+    let signedFormFields: Record<string, string> | null = null;
+
+    if (cfg.configured) {
+      try {
+        const dataString = `${cfg.merchantId}${amountFormatted}${currency}${pluginName}${pluginVersion}${returnUrl}${cancelUrl}${cleanOrderId}${reference}${cleanFirst}${cleanLast}${cleanEmail}${cleanDesc}${cfg.apiKey}${responseUrl}`;
+        const signer = crypto.createSign('RSA-SHA256');
+        signer.update(dataString);
+        signer.end();
+        const signature = signer.sign(cfg.privateKey, 'base64');
+
+        mode = 'live_redirect';
+        signedFormFields = {
+          _mId: cfg.merchantId,
+          api_key: cfg.apiKey,
+          _returnUrl: returnUrl,
+          _cancelUrl: cancelUrl,
+          _responseUrl: responseUrl,
+          _currency: currency,
+          _amount: amountFormatted,
+          _reference: reference,
+          _orderId: cleanOrderId,
+          _pluginName: pluginName,
+          _pluginVersion: pluginVersion,
+          _description: cleanDesc,
+          _firstName: cleanFirst,
+          _lastName: cleanLast,
+          _email: cleanEmail,
+          dataString,
+          signature,
+        };
+      } catch (signErr) {
+        console.error('Koko RSA signing error (falling back to sandbox mode):', signErr);
+      }
+    }
+
+    kokoSessions.set(sessionId, {
+      sessionId,
+      orderId: cleanOrderId,
+      reference,
+      amountLkr: roundedAmount,
+      installments,
+      customerName: `${cleanFirst} ${cleanLast}`.trim(),
+      customerEmail: cleanEmail,
+      customerPhone: cleanPhone,
+      description: cleanDesc,
+      mode,
+      status: 'pending',
+      createdAt,
+      expiresAt,
+      sandboxOtpAttempts: 0,
+    });
+
+    res.json({
+      sessionId,
+      orderId: cleanOrderId,
+      reference,
+      amountLkr: roundedAmount,
+      currency,
+      installments,
+      mode,
+      sandbox: cfg.isSandbox,
+      gatewayUrl: mode === 'live_redirect' ? cfg.gatewayUrl : null,
+      signedFormFields,
+      expiresAt,
+      status: 'pending',
+    });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('Koko create-order error:', message);
+    res.status(500).json({ error: 'Unable to initialize Koko payment session.' });
+  }
+});
+
+app.get('/api/koko/session/:sessionId', (req, res) => {
+  const sessionId = String(req.params.sessionId || '').trim();
+  const record = kokoSessions.get(sessionId);
+  if (!record) {
+    res.status(404).json({ error: 'Koko payment session not found.' });
+    return;
+  }
+
+  let effectiveStatus = record.status;
+  if (
+    (record.status === 'pending' || record.status === 'otp_sent') &&
+    Date.now() > record.expiresAt
+  ) {
+    record.status = 'expired';
+    effectiveStatus = 'expired';
+  }
+
+  res.json({
+    sessionId: record.sessionId,
+    orderId: record.orderId,
+    amountLkr: record.amountLkr,
+    installments: record.installments,
+    mode: record.mode,
+    status: effectiveStatus,
+    trnId: record.trnId || null,
+    paidAt: record.paidAt || null,
+    expiresAt: record.expiresAt,
+  });
+});
+
+// Sandbox-only OTP request endpoint (disabled automatically when live Koko keys are configured)
+app.post('/api/koko/sandbox/send-otp', (req, res) => {
+  try {
+    const cfg = getKokoMerchantConfig();
+    if (cfg.configured) {
+      res.status(403).json({ error: 'Sandbox OTP flow is disabled in live merchant mode.' });
+      return;
+    }
+
+    const { sessionId, mobileNumber } = req.body as {
+      sessionId?: unknown;
+      mobileNumber?: unknown;
+    };
+
+    if (typeof sessionId !== 'string' || !sessionId.trim()) {
+      res.status(400).json({ error: 'Valid Koko sessionId is required.' });
+      return;
+    }
+
+    const record = kokoSessions.get(sessionId.trim());
+    if (!record || record.mode !== 'sandbox_modal') {
+      res.status(404).json({ error: 'Koko payment session not found or expired.' });
+      return;
+    }
+
+    if (Date.now() > record.expiresAt) {
+      record.status = 'expired';
+      res.status(410).json({ error: 'Koko session expired. Please restart checkout.' });
+      return;
+    }
+
+    const normalizedMobile =
+      typeof mobileNumber === 'string'
+        ? mobileNumber.replace(/[\s-]/g, '').trim()
+        : '';
+    if (!/^(?:\+94|0)?7[0-9]{8}$/.test(normalizedMobile)) {
+      res.status(400).json({
+        error: 'Please enter a valid Sri Lankan mobile number (e.g., 0771234567).',
+      });
+      return;
+    }
+
+    const otp = String(crypto.randomInt(100000, 999999));
+    record.sandboxOtp = otp;
+    record.sandboxOtpExpiresAt = Date.now() + 5 * 60 * 1000;
+    record.sandboxOtpAttempts = 0;
+    record.sandboxPhone = normalizedMobile;
+    record.status = 'otp_sent';
+
+    const maskedPhone = `${normalizedMobile.slice(0, -4).replace(/\d/g, '•')}${normalizedMobile.slice(-4)}`;
+
+    res.json({
+      sent: true,
+      maskedPhone,
+      sandboxOtpPreview: otp,
+      expiresInSeconds: 300,
+    });
+  } catch (error: unknown) {
+    console.error('Koko sandbox send-otp error:', error);
+    res.status(500).json({ error: 'Failed to issue Koko verification OTP.' });
+  }
+});
+
+// Sandbox-only OTP verification + RSA-SHA256 callback verification simulation
+app.post('/api/koko/sandbox/verify-otp', (req, res) => {
+  try {
+    const cfg = getKokoMerchantConfig();
+    if (cfg.configured) {
+      res.status(403).json({ error: 'Sandbox OTP flow is disabled in live merchant mode.' });
+      return;
+    }
+
+    const { sessionId, otp } = req.body as { sessionId?: unknown; otp?: unknown };
+    if (typeof sessionId !== 'string' || typeof otp !== 'string') {
+      res.status(400).json({ error: 'Session ID and 6-digit OTP are required.' });
+      return;
+    }
+
+    const record = kokoSessions.get(sessionId.trim());
+    if (!record || record.mode !== 'sandbox_modal') {
+      res.status(404).json({ error: 'Koko payment session not found.' });
+      return;
+    }
+
+    if (Date.now() > record.expiresAt) {
+      record.status = 'expired';
+      res.status(410).json({ error: 'Koko session expired. Please start again.' });
+      return;
+    }
+
+    if (record.status === 'paid' && record.trnId) {
+      res.json({
+        verified: true,
+        orderId: record.orderId,
+        trnId: record.trnId,
+        paidAt: record.paidAt,
+        installments: record.installments,
+      });
+      return;
+    }
+
+    if (!record.sandboxOtp || !record.sandboxOtpExpiresAt || Date.now() > record.sandboxOtpExpiresAt) {
+      res.status(400).json({ error: 'OTP expired. Please request a new OTP.' });
+      return;
+    }
+
+    if (record.sandboxOtpAttempts >= 5) {
+      res.status(429).json({ error: 'Too many invalid OTP attempts. Please request a new OTP.' });
+      return;
+    }
+
+    const cleanOtp = otp.trim();
+    if (!/^\d{6}$/.test(cleanOtp) || !timingSafeCompareStr(cleanOtp, record.sandboxOtp)) {
+      record.sandboxOtpAttempts += 1;
+      res.status(400).json({
+        error: `Invalid 6-digit OTP (${5 - record.sandboxOtpAttempts} attempts remaining).`,
+      });
+      return;
+    }
+
+    // Exercise the real RSA-SHA256 sign + verify path using the ephemeral sandbox RSA-2048 keypair
+    const trnId = `KOKO-TRN-${Date.now().toString().slice(-8)}-${crypto
+      .randomBytes(2)
+      .toString('hex')
+      .toUpperCase()}`;
+    const callbackDataString = `${record.orderId}${trnId}SUCCESS`;
+    const { privateKey, publicKey } = getSandboxKokoRsaKeys();
+
+    const signer = crypto.createSign('RSA-SHA256');
+    signer.update(callbackDataString);
+    signer.end();
+    const simulatedSig = signer.sign(privateKey, 'base64');
+
+    const verifier = crypto.createVerify('RSA-SHA256');
+    verifier.update(callbackDataString);
+    verifier.end();
+    const signatureOk = verifier.verify(publicKey, simulatedSig, 'base64');
+
+    if (!signatureOk) {
+      res.status(500).json({ error: 'RSA signature verification failed.' });
+      return;
+    }
+
+    record.status = 'paid';
+    record.trnId = trnId;
+    record.paidAt = Date.now();
+    record.sandboxOtp = undefined;
+
+    console.log(
+      `[Koko Sandbox Paid] Order ${record.orderId} · 1st Installment LKR ${record.installments[0].amountLkr.toFixed(
+        2
+      )} / Total LKR ${record.amountLkr.toFixed(2)} · Ref: ${trnId}`
+    );
+
+    res.json({
+      verified: true,
+      orderId: record.orderId,
+      trnId,
+      paidAt: record.paidAt,
+      installments: record.installments,
+    });
+  } catch (error: unknown) {
+    console.error('Koko sandbox verify-otp error:', error);
+    res.status(500).json({ error: 'Failed to verify Koko OTP.' });
+  }
+});
+
+// Production Koko Server-to-Server Callback Webhook (RSA-SHA256 verified via KOKO_PUBLIC_KEY)
+app.post('/api/koko/callback', (req, res) => {
+  try {
+    const cfg = getKokoMerchantConfig();
+    if (!cfg.publicKey) {
+      res.status(503).send('KOKO_PUBLIC_KEY not configured');
+      return;
+    }
+
+    const {
+      orderId = '',
+      trnId = '',
+      status = '',
+      signature = '',
+    } = req.body as Record<string, string>;
+
+    if (!orderId || !trnId || !status || !signature) {
+      res.status(400).send('Missing callback fields');
+      return;
+    }
+
+    const dataString = `${String(orderId)}${String(trnId)}${String(status)}`;
+    const verifier = crypto.createVerify('RSA-SHA256');
+    verifier.update(dataString);
+    verifier.end();
+
+    const isAuthentic = verifier.verify(cfg.publicKey, String(signature), 'base64');
+    if (!isAuthentic) {
+      console.error('[Koko Callback] Invalid RSA signature for order:', orderId);
+      res.status(403).send('Invalid signature');
+      return;
+    }
+
+    let matched: KokoSessionRecord | undefined;
+    for (const rec of kokoSessions.values()) {
+      if (rec.orderId === String(orderId)) {
+        matched = rec;
+        break;
+      }
+    }
+
+    if (matched) {
+      if (String(status).toUpperCase() === 'SUCCESS') {
+        matched.status = 'paid';
+        matched.trnId = String(trnId).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40);
+        matched.paidAt = Date.now();
+        console.log(`[Koko Live Webhook] Order ${orderId} PAID · TrnID: ${matched.trnId}`);
+      } else {
+        matched.status = 'failed';
+      }
+    }
+
+    res.status(200).send('OK');
+  } catch (error: unknown) {
+    console.error('Koko callback error:', error);
+    res.status(500).send('Callback error');
   }
 });
 

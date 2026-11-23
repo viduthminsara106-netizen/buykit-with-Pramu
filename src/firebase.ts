@@ -119,6 +119,157 @@ export function sanitizeId(raw: string): string {
   return cleaned.length > 0 ? cleaned : 'item_default';
 }
 
+export const ROOT_ADMIN_EMAIL = 'viduthminsara106@gmail.com';
+export const SECONDARY_ROOT_ADMIN_EMAIL = 'pramudithamanuja853@gmail.com';
+export const ROOT_ADMIN_EMAILS = [
+  ROOT_ADMIN_EMAIL,
+  SECONDARY_ROOT_ADMIN_EMAIL,
+] as const;
+
+export function isRootAdminEmail(email?: string | null): boolean {
+  if (!email) return false;
+  const normalized = email.trim().toLowerCase();
+  return ROOT_ADMIN_EMAILS.some((root) => root.toLowerCase() === normalized);
+}
+
+export function emailToAdminKey(email: string): string {
+  return email
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '_')
+    .slice(0, VALIDATION_LIMITS.MAX_ID_LEN);
+}
+
+export type AdminNotificationType =
+  | 'cart_add'
+  | 'order_placed'
+  | 'review_added'
+  | 'question_asked'
+  | 'sale_started'
+  | 'sale_ended'
+  | 'promo_updated'
+  | 'system';
+
+export interface AdminEmailRecord {
+  id: string;
+  adminEmailId: string;
+  email: string;
+  addedByEmail: string;
+  role: 'admin';
+  createdAtMs: number;
+}
+
+export interface AdminNotificationRecord {
+  id: string;
+  notificationId: string;
+  type: AdminNotificationType;
+  title: string;
+  message: string;
+  actorUserId: string;
+  actorName: string;
+  actorEmail: string;
+  relatedId: string;
+  read: boolean;
+  createdAtMs: number;
+  isLocalOnly?: boolean;
+}
+
+export interface AdminOrderRecord {
+  id: string;
+  orderId: string;
+  userId: string;
+  orderNumber: string;
+  customerName: string;
+  customerEmail: string;
+  customerPhone: string;
+  shippingAddress: string;
+  summaryTitle: string;
+  itemCount: number;
+  totalAmount: number;
+  paymentMethod: 'cod' | 'card_express';
+  paymentLabel: string;
+  pickupHubName: string;
+  status:
+    | 'processing'
+    | 'preparing'
+    | 'dispatched'
+    | 'in_transit'
+    | 'shipped'
+    | 'delivered'
+    | 'cancelled';
+  createdAtMs: number;
+  updatedAtMs: number;
+  isLocalOnly?: boolean;
+}
+
+export async function emitAdminNotificationToFirestore(params: {
+  type: AdminNotificationType;
+  title: string;
+  message: string;
+  relatedId?: string;
+  user?: User | null;
+  fallbackActorName?: string;
+  fallbackActorEmail?: string;
+}): Promise<AdminNotificationRecord> {
+  const activeUser = params.user || auth.currentUser;
+  const notificationId = sanitizeId(
+    `notif_${params.type}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
+  );
+  const actorUserId = sanitizeId(activeUser?.uid || 'guest_shopper');
+  const actorName = (
+    activeUser?.displayName ||
+    params.fallbackActorName ||
+    activeUser?.email?.split('@')[0] ||
+    'BuyKit Shopper'
+  ).slice(0, VALIDATION_LIMITS.MAX_DISPLAY_NAME);
+  const actorEmail = (
+    activeUser?.email ||
+    params.fallbackActorEmail ||
+    'guest@buykit.lk'
+  ).slice(0, VALIDATION_LIMITS.MAX_EMAIL);
+  const cleanTitle = params.title.trim().slice(0, 140) || 'Storefront Activity';
+  const cleanMessage = params.message.trim().slice(0, 500) || 'New activity recorded.';
+  const cleanRelatedId = sanitizeId(params.relatedId || 'general');
+
+  const localRecord: AdminNotificationRecord = {
+    id: notificationId,
+    notificationId,
+    type: params.type,
+    title: cleanTitle,
+    message: cleanMessage,
+    actorUserId,
+    actorName,
+    actorEmail,
+    relatedId: cleanRelatedId,
+    read: false,
+    createdAtMs: Date.now(),
+    isLocalOnly: !activeUser || !activeUser.emailVerified,
+  };
+
+  if (activeUser && activeUser.emailVerified) {
+    try {
+      await setDoc(doc(db, 'admin_notifications', notificationId), {
+        notificationId,
+        type: params.type,
+        title: cleanTitle,
+        message: cleanMessage,
+        actorUserId: activeUser.uid,
+        actorName,
+        actorEmail,
+        relatedId: cleanRelatedId,
+        read: false,
+        createdAt: serverTimestamp(),
+      });
+      localRecord.isLocalOnly = false;
+    } catch (err) {
+      // Never block shopper checkout/cart/review UX if notification write fails
+      console.warn('Admin notification Firestore write skipped:', err);
+    }
+  }
+
+  return localRecord;
+}
+
 export async function ensureUserProfileDocument(user: User): Promise<void> {
   const userPath = `users/${user.uid}`;
   const userRef = doc(db, 'users', user.uid);

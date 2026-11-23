@@ -101,6 +101,8 @@ interface DarazAliAccountTabProps {
   selectedLanguageCode: string;
   savedCardsCount: number;
   onOpenSettingsModal: (tab?: SettingsTabKey) => void;
+  isAdmin?: boolean;
+  unreadAdminNotificationCount?: number;
   onOpenAdminStudio?: () => void;
   logoBadge: React.ReactNode;
 }
@@ -146,6 +148,8 @@ export const DarazAliAccountTab: React.FC<DarazAliAccountTabProps> = ({
   selectedLanguageCode,
   savedCardsCount,
   onOpenSettingsModal,
+  isAdmin = false,
+  unreadAdminNotificationCount = 0,
   onOpenAdminStudio,
   logoBadge,
 }) => {
@@ -288,7 +292,7 @@ export const DarazAliAccountTab: React.FC<DarazAliAccountTabProps> = ({
 
                 <p className="mt-0.5 text-xs text-orange-100">
                   {currentUser
-                    ? `${currentUser.email} · Delivery Hub: ${selectedHubName}`
+                    ? `${currentUser.email} · Verified BuyKit Member`
                     : 'Sign in or register in one click to sync your Cart, Wishlist, Orders & LKR Vouchers'}
                 </p>
               </div>
@@ -337,15 +341,20 @@ export const DarazAliAccountTab: React.FC<DarazAliAccountTabProps> = ({
                 <span>Settings</span>
               </button>
 
-              {onOpenAdminStudio && (
+              {isAdmin && onOpenAdminStudio && (
                 <button
                   type="button"
                   onClick={onOpenAdminStudio}
-                  title="Admin Studio: Add Products (Google Enriched), Launch Creative Sales & Promotional Posters"
-                  className="inline-flex items-center gap-1.5 rounded-xl border border-amber-300/80 bg-slate-950/90 px-3.5 py-2 text-xs font-extrabold text-amber-300 shadow-md transition-transform hover:scale-[1.03]"
+                  title="Admin Panel Dashboard: Products, Sales, Promo, Notifications, Order Tracking & Q&A"
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-amber-300/80 bg-slate-950/95 px-3.5 py-2 text-xs font-extrabold text-amber-300 shadow-md transition-transform hover:scale-[1.03]"
                 >
-                  <Sparkles className="h-4 w-4 text-amber-300" />
-                  <span>Admin Studio (+Product / Sale / Poster)</span>
+                  <ShieldCheck className="h-4 w-4 text-amber-300" />
+                  <span>Admin Dashboard</span>
+                  {unreadAdminNotificationCount > 0 && (
+                    <span className="ml-0.5 flex h-5 min-w-[20px] items-center justify-center rounded-full bg-red-600 px-1.5 font-mono text-[10px] font-extrabold text-white">
+                      {unreadAdminNotificationCount > 99 ? '99+' : unreadAdminNotificationCount}
+                    </span>
+                  )}
                 </button>
               )}
 
@@ -522,19 +531,7 @@ export const DarazAliAccountTab: React.FC<DarazAliAccountTabProps> = ({
             </div>
           </div>
 
-          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 pt-2">
-            <div className="flex items-center gap-2 text-xs text-slate-600">
-              <span>Selected Pickup Hub:</span>
-              <strong className="text-slate-900">{selectedHubName}</strong>
-              <button
-                type="button"
-                onClick={onOpenPickupMap}
-                className="font-semibold text-[#F85606] underline"
-              >
-                Change on Map
-              </button>
-            </div>
-
+          <div className="mt-3 flex flex-wrap items-center justify-end gap-2 pt-2">
             <button
               type="submit"
               disabled={isSavingAddress}

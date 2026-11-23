@@ -53,6 +53,44 @@ const COMPLEMENTARY_CATEGORY_ASSETS: Record<ProductDepartment, string[]> = {
 
 export function buildProductGallerySlides(product: MarketplaceProduct): ProductGallerySlide[] {
   const mainImageUrl = resolveAssetUrl(product.imageUrl);
+  const customExtras = (product.extraImages || [])
+    .map((u) => u.trim())
+    .filter(Boolean)
+    .map((u) => resolveAssetUrl(u));
+
+  // If the Admin added custom extra images for this product, show Main Image + all Extra Images + Detail Views
+  if (customExtras.length > 0) {
+    const customSlides: ProductGallerySlide[] = [
+      {
+        id: `${product.id}_slide_main`,
+        url: mainImageUrl,
+        label: 'Main Image',
+        caption: `${product.title} — Official Main View`,
+        imageTransformClass: 'object-center',
+      },
+      ...customExtras.map((extraUrl, idx) => ({
+        id: `${product.id}_extra_${idx}`,
+        url: extraUrl,
+        label: `Photo ${idx + 2}`,
+        caption: `${product.title} — Gallery View ${idx + 2}`,
+        imageTransformClass: 'object-center',
+      })),
+    ];
+
+    // If fewer than 4 total slides, append a close-up detail view of the main image
+    if (customSlides.length < 4) {
+      customSlides.push({
+        id: `${product.id}_slide_macro`,
+        url: mainImageUrl,
+        label: 'Detail View',
+        caption: product.specs[0] || 'Precision Hardware Detail View',
+        imageTransformClass: 'object-left-top brightness-[1.03]',
+      });
+    }
+
+    return customSlides;
+  }
+
   const categoryExtras =
     COMPLEMENTARY_CATEGORY_ASSETS[product.category] ||
     COMPLEMENTARY_CATEGORY_ASSETS['Audio & Headphones'];
@@ -202,24 +240,38 @@ export const ProductImageGallery: React.FC<ProductImageGalleryProps> = ({
           ))}
         </div>
 
-        {/* TOP-LEFT CORNER: In Stock (Green) / Out of Stock (Red) Badge */}
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            if (onToggleStock) onToggleStock(product.id, e);
-          }}
-          title="Click to toggle In Stock (Green) / Out of Stock (Red)"
-          className={`absolute top-3 left-3 z-10 inline-flex items-center gap-1.5 rounded-lg px-3 py-1 text-xs font-extrabold tracking-wide text-white uppercase shadow-md transition-colors ${
-            isInStock
-              ? 'border border-emerald-300/70 bg-emerald-600 hover:bg-emerald-700'
-              : 'border border-red-300/70 bg-red-600 hover:bg-red-700'
-          }`}
-        >
-          <span>
-            {isInStock ? `In Stock (${product.stockRemaining})` : 'Out of Stock'}
+        {/* TOP-LEFT CORNER: In Stock (Green) / Out of Stock (Red) Badge (Read-only for shoppers) */}
+        {onToggleStock ? (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleStock(product.id, e);
+            }}
+            title="Admin: Toggle In Stock / Out of Stock"
+            className={`absolute top-3 left-3 z-10 inline-flex items-center gap-1.5 rounded-lg px-3 py-1 text-xs font-extrabold tracking-wide text-white uppercase shadow-md transition-colors ${
+              isInStock
+                ? 'border border-emerald-300/70 bg-emerald-600 hover:bg-emerald-700'
+                : 'border border-red-300/70 bg-red-600 hover:bg-red-700'
+            }`}
+          >
+            <span>
+              {isInStock ? `In Stock (${product.stockRemaining})` : 'Out of Stock'}
+            </span>
+          </button>
+        ) : (
+          <span
+            className={`absolute top-3 left-3 z-10 inline-flex items-center gap-1.5 rounded-lg px-3 py-1 text-xs font-extrabold tracking-wide text-white uppercase shadow-md ${
+              isInStock
+                ? 'border border-emerald-300/70 bg-emerald-600'
+                : 'border border-red-300/70 bg-red-600'
+            }`}
+          >
+            <span>
+              {isInStock ? `In Stock (${product.stockRemaining})` : 'Out of Stock'}
+            </span>
           </span>
-        </button>
+        )}
 
         {/* TOP-RIGHT CORNER: Slide Counter + Fullscreen View Trigger */}
         <div className="absolute top-3 right-3 z-10 flex items-center gap-1.5">
