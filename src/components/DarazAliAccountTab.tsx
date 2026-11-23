@@ -30,9 +30,11 @@ import {
   Settings,
   Globe,
   Languages,
+  FileDown,
 } from 'lucide-react';
 import { User } from '../firebase';
 import { MarketplaceProduct, DealTier, formatLKR } from '../data/catalog';
+import { downloadOrderInvoicePdf } from '../utils/invoicePdfGenerator';
 import { resolveAssetUrl } from '../utils/assetResolver';
 import {
   TrackableOrder,
@@ -977,6 +979,27 @@ export const DarazAliAccountTab: React.FC<DarazAliAccountTabProps> = ({
                       <span className="font-mono text-sm font-bold text-[#F85606] tabular-nums">
                         {formatLKR(ord.totalAmount)}
                       </span>
+
+                      <button
+                        type="button"
+                        onClick={() =>
+                          downloadOrderInvoicePdf(ord, {
+                            customerName:
+                              currentUser?.displayName ||
+                              currentUser?.email?.split('@')[0] ||
+                              'BuyKit Shopper',
+                            customerEmail: currentUser?.email || undefined,
+                            customerPhone: phone || undefined,
+                            shippingAddress: shippingAddress
+                              ? `${shippingAddress}${postalCode ? ` (${postalCode})` : ''}`
+                              : selectedHubName,
+                          })
+                        }
+                        className="inline-flex items-center gap-1 rounded-lg border border-orange-200 bg-[#FFF3EB] px-2.5 py-1.5 text-[11px] font-bold text-[#F85606] transition-colors hover:bg-[#F85606] hover:text-white"
+                      >
+                        <FileDown className="h-3 w-3" />
+                        <span>Download Invoice</span>
+                      </button>
 
                       <button
                         type="button"

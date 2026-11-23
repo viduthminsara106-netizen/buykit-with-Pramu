@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   ShoppingBag,
   Truck,
@@ -172,6 +172,8 @@ interface DarazAliCheckoutViewProps {
   }) => Promise<void>;
   onBackToCart?: () => void;
   onViewPlacedOrderTracking?: () => void;
+  checkoutSessionKey?: number;
+  onTriggerTopLoading?: (onNavigate: () => void) => void;
 }
 
 interface OrderPlacedConfirmationDetails {
@@ -219,12 +221,17 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
   onConfirmCheckoutOrder,
   onBackToCart,
   onViewPlacedOrderTracking,
+  checkoutSessionKey = 0,
+  onTriggerTopLoading,
 }) => {
   const effectiveCoupons =
     availableCoupons && availableCoupons.length > 0
       ? availableCoupons
       : AVAILABLE_CHECKOUT_COUPONS;
   const t = getTranslations(selectedLanguageCode);
+  const [checkoutStep, setCheckoutStep] = useState<'setup' | 'review'>('setup');
+  const summarySectionRef = useRef<HTMLDivElement | null>(null);
+  const paymentSectionRef = useRef<HTMLDivElement | null>(null);
   const [selectedCouponId, setSelectedCouponId] = useState<string>('coupon_buykit5000');
   const [isCouponPickerOpen, setIsCouponPickerOpen] = useState<boolean>(false);
   const [customCouponInput, setCustomCouponInput] = useState<string>('');
@@ -232,7 +239,8 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
   const [redeemBuyKitCoins, setRedeemBuyKitCoins] = useState<boolean>(true);
   const [deliveryMethod, setDeliveryMethod] = useState<DeliveryMethodKey>('standard');
   const [selectedPaymentOption, setSelectedPaymentOption] =
-    useState<CheckoutPaymentMethodKey>('card_express');
+    useState<CheckoutPaymentMethodKey | null>(null);
+  const [paymentSelectionWarning, setPaymentSelectionWarning] = useState<boolean>(false);
   const [selectedCardId, setSelectedCardId] = useState<string>(
     savedCards.find((c) => c.isDefault)?.id || savedCards[0]?.id || ''
   );
@@ -247,6 +255,48 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
   const [processingGatewayConfirm, setProcessingGatewayConfirm] = useState<boolean>(false);
   const [orderPlacedModalData, setOrderPlacedModalData] =
     useState<OrderPlacedConfirmationDetails | null>(null);
+
+  // Reset to Step 1 with NO default payment method whenever a fresh Checkout session starts
+  useEffect(() => {
+    setCheckoutStep('setup');
+    setSelectedPaymentOption(null);
+    setPaymentSelectionWarning(false);
+    setIsCouponPickerOpen(false);
+    setGatewayError('');
+  }, [checkoutSessionKey]);
+
+  // Default scroll to the Order Summary section at the bottom when entering Step 2 (Read-Only Review)
+  useEffect(() => {
+    if (checkoutStep !== 'review') return;
+    const timer = window.setTimeout(() => {
+      if (summarySectionRef.current) {
+        summarySectionRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' });
+      } else {
+        window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
+      }
+    }, 90);
+    return () => window.clearTimeout(timer);
+  }, [checkoutStep]);
+
+  const handleGoToReviewStep = () => {
+    // Strictly require a payment method selection before proceeding to Step 2
+    if (!selectedPaymentOption) {
+      setPaymentSelectionWarning(true);
+      paymentSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+    setPaymentSelectionWarning(false);
+    setGatewayError('');
+    setIsCouponPickerOpen(false);
+    const moveToReview = () => {
+      setCheckoutStep('review');
+    };
+    if (onTriggerTopLoading) {
+      onTriggerTopLoading(moveToReview);
+    } else {
+      moveToReview();
+    }
+  };
 
   const currentCountry =
     COUNTRIES_WITH_FLAGS.find((c) => c.code === selectedCountryCode) ||
@@ -325,7 +375,9 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
   };
 
   const handleSelectPaymentType = (opt: CheckoutPaymentMethodKey) => {
+    if (opt === 'koko_installments') return; // Disabled (Coming Soon)
     setSelectedPaymentOption(opt);
+    setPaymentSelectionWarning(false);
     if (opt === 'cod') {
       onSelectPaymentMethod('cod');
     } else {
@@ -337,9 +389,10 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
     savedCards.find((c) => c.id === selectedCardId) || savedCards[0];
 
   const paymentMethodLabel = useMemo(() => {
+    if (!selectedPaymentOption) return 'Not Selected';
     if (selectedPaymentOption === 'cod') return 'Cash on Delivery (COD)';
     if (selectedPaymentOption === 'koko_installments')
-      return 'Koko / BuyKit PayLater (3x 0% Installments)';
+      return 'Koko / BuyKit PayLater (Coming Soon)';
     if (selectedPaymentOption === 'lanka_qr') return 'LankaQR / Instant Bank Transfer';
     if (selectedCardObj) {
       return `${selectedCardObj.brand} ${selectedCardObj.cardType} (•••• ${selectedCardObj.last4})`;
@@ -539,6 +592,11 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
       return;
     }
 
+    if (!selectedPaymentOption) {
+      setGatewayError('Please select an available payment method before placing your order.');
+      return;
+    }
+
     // For Cash on Delivery (COD), place order and show Order Placed confirmation modal
     if (selectedPaymentOption === 'cod') {
       const codOrderId = `BK-COD-${Date.now().toString().slice(-6)}`;
@@ -577,54 +635,9 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
       return;
     }
 
-    // For Koko 3x 0% Installments, initialize a server-signed Koko session
+    // Koko 3x 0% Installments is currently disabled (Coming Soon)
     if (selectedPaymentOption === 'koko_installments') {
-      if (finalPayableAmount < KOKO_MIN_ORDER_LKR || finalPayableAmount > KOKO_MAX_ORDER_LKR) {
-        setGatewayError(
-          `Koko 3x 0% Installments is available for orders between ${formatLKR(
-            KOKO_MIN_ORDER_LKR
-          )} and ${formatLKR(KOKO_MAX_ORDER_LKR)}.`
-        );
-        return;
-      }
-
-      setCreatingIntent(true);
-      setGatewayError('');
-      try {
-        const kokoOrderId = `BKKOKO-${Date.now()}`;
-        const nameParts = (fullName || 'BuyKit Customer').trim().split(/\s+/);
-        const firstName = nameParts[0] || 'BuyKit';
-        const lastName = nameParts.slice(1).join(' ') || 'Customer';
-        const itemsTitle = items
-          .map((i) => `${i.title} x${i.quantity}`)
-          .join(', ')
-          .slice(0, 140);
-
-        const resp = await fetch('/api/koko/create-order', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            orderId: kokoOrderId,
-            amountLkr: finalPayableAmount,
-            firstName,
-            lastName,
-            email: email || 'customer@buykit.lk',
-            phone: phone || '0771234567',
-            description: itemsTitle || `BuyKit Order ${kokoOrderId}`,
-          }),
-        });
-        const data = await resp.json();
-        if (!resp.ok) {
-          throw new Error(data.error || 'Could not initialize Koko checkout session.');
-        }
-
-        setKokoSession(data as KokoOrderSession);
-        setIsKokoModalOpen(true);
-      } catch (err: unknown) {
-        setGatewayError(err instanceof Error ? err.message : 'Koko checkout initialization failed.');
-      } finally {
-        setCreatingIntent(false);
-      }
+      setGatewayError('Koko / BuyKit PayLater is Coming Soon. Please choose another payment method.');
       return;
     }
 
@@ -681,61 +694,44 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
   };
 
   return (
-    <section className="mx-auto max-w-6xl space-y-5 pb-28">
-      {/* Top Checkout Progress Header */}
-      <div className="flex flex-col justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-2xs sm:flex-row sm:items-center sm:p-5">
-        <div className="flex items-center gap-3">
-          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[#F85606] text-white shadow-xs">
-            <ShoppingBag className="h-5 w-5" />
-          </div>
-          <div>
-            <div className="flex flex-wrap items-center gap-2">
-              <h1 className="font-display text-lg font-extrabold text-slate-950 sm:text-xl">
-                {t.checkoutHeaderTitle}
-              </h1>
-              <span className="rounded-md bg-[#FFF3EB] px-2.5 py-0.5 font-mono text-xs font-extrabold text-[#F85606]">
-                {totalUnits} {totalUnits === 1 ? 'Item' : 'Items'}
-              </span>
-            </div>
-            <p className="text-xs text-slate-500">
-              {t.checkoutHeaderSubtitle}
-            </p>
-          </div>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          {onBackToCart && (
+    <section className="mx-auto max-w-3xl space-y-3 pt-2.5 pb-44">
+      {/* Compact Top Step Bar — Shown ONLY on Step 2 (Removed on Step 1 for maximum vertical space) */}
+      {checkoutStep === 'review' && (
+        <div className="sticky top-0 z-30 -mx-3 flex items-center justify-between gap-3 border-b border-slate-200 bg-white/98 px-4 py-2.5 shadow-2xs backdrop-blur-md sm:mx-0 sm:rounded-2xl sm:border sm:px-5">
+          <div className="flex items-center gap-2.5">
             <button
               type="button"
-              onClick={onBackToCart}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-extrabold text-slate-800 transition-colors hover:border-[#F85606] hover:text-[#F85606]"
+              onClick={() => {
+                setCheckoutStep('setup');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }}
+              aria-label="Back to Address, Coupons and Payment"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-slate-800 transition-colors hover:border-[#F85606] hover:text-[#F85606]"
             >
-              <ArrowLeft className="h-3.5 w-3.5" />
-              <span>Back to Cart</span>
+              <ArrowLeft className="h-4 w-4" />
             </button>
-          )}
-          <button
-            type="button"
-            onClick={() => onOpenSettingsTab('country_language')}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-800 hover:border-[#F85606]"
-          >
-            <img
-              src={currentCountry.flagUrl}
-              alt={currentCountry.name}
-              className="h-4 w-6 rounded-xs border border-slate-300 object-cover"
-            />
-            <span>{currentCountry.name}</span>
-          </button>
 
-          <button
-            type="button"
-            onClick={onContinueShopping}
-            className="rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50"
-          >
-            {t.addMoreProducts}
-          </button>
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <h1 className="font-display text-sm font-extrabold text-slate-950 sm:text-base">
+                  Order Review &amp; Summary
+                </h1>
+                <span className="rounded-md bg-[#FFF3EB] px-2 py-0.5 font-mono text-[10px] font-extrabold text-[#F85606] uppercase">
+                  Step 2 of 2
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-500">
+                Read-only final order details — verify your summary &amp; confirm payment
+              </p>
+            </div>
+          </div>
+
+          <span className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-slate-100 px-2.5 py-1 text-[10px] font-extrabold text-slate-700 uppercase">
+            <Lock className="h-3 w-3 text-[#F85606]" />
+            <span>Read-Only</span>
+          </span>
         </div>
-      </div>
+      )}
 
       {items.length === 0 ? (
         <div className="rounded-2xl border border-slate-200 bg-white p-12 text-center shadow-2xs">
@@ -744,668 +740,761 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
             No Products Selected for Checkout Yet
           </h2>
           <p className="mx-auto mt-1 max-w-md text-xs text-slate-500">
-            Click &ldquo;Buy Now&rdquo; or &ldquo;Add to Cart&rdquo; on any product card to open this Checkout page with your item, coupons, delivery fee breakdown, and payment options.
+            Select products in your Cart and click &ldquo;Pay Now&rdquo; to continue to checkout.
           </p>
           <button
             type="button"
-            onClick={onContinueShopping}
+            onClick={onBackToCart || onContinueShopping}
             className="mt-5 inline-flex items-center gap-2 rounded-xl bg-[#F85606] px-6 py-3 text-xs font-extrabold text-white shadow-sm hover:bg-[#d94800]"
           >
-            <Bolt className="h-4 w-4" />
-            <span>Browse Products & Deals</span>
+            <ShoppingBag className="h-4 w-4" />
+            <span>{onBackToCart ? 'Return to Cart' : 'Browse Products & Deals'}</span>
           </button>
         </div>
-      ) : (
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
-          {/* LEFT 7 COLUMNS: Address, Order Items, Delivery Fee Selector, Coupons & Payment Options */}
-          <div className="space-y-5 lg:col-span-7">
-            {/* 1. SHIPPING ADDRESS, COUNTRY FLAG & CONTACT DETAILS BANNER */}
-            <div className="relative overflow-hidden rounded-2xl border border-slate-200 bg-white p-5 shadow-2xs">
-              <div className="absolute top-0 right-0 left-0 h-1.5 bg-gradient-to-r from-[#F85606] via-blue-500 to-[#F85606]" />
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div className="flex items-start gap-3">
-                  <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#FFF3EB] text-[#F85606]">
-                    <MapPin className="h-5 w-5" />
+      ) : checkoutStep === 'setup' ? (
+        /* =========================================================
+           STEP 1: ADDRESS, COMPACT APPLIED COUPONS & VOUCHERS, SELECT PAYMENT METHOD ONLY
+           (No top header bar, no products list, no summary card — requires payment selection)
+           ========================================================= */
+        <div className="space-y-3">
+          {/* 1. SHIPPING ADDRESS (Compact & Clean) */}
+          <div className="relative overflow-hidden rounded-2xl border border-slate-200 bg-white p-4 shadow-2xs">
+            <div className="absolute top-0 right-0 left-0 h-1 bg-gradient-to-r from-[#F85606] via-blue-500 to-[#F85606]" />
+            <div className="flex flex-wrap items-start justify-between gap-2.5">
+              <div className="flex items-start gap-2.5">
+                <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#FFF3EB] text-[#F85606]">
+                  <MapPin className="h-4 w-4" />
+                </div>
+                <div className="space-y-0.5">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="rounded bg-[#F85606] px-1.5 py-0.5 text-[9px] font-extrabold text-white uppercase">
+                      {addressLabel}
+                    </span>
+                    <span className="font-display text-xs font-extrabold text-slate-950 sm:text-sm">
+                      {fullName || 'BuyKit Shopper'}
+                    </span>
+                    <span className="font-mono text-[11px] font-bold text-slate-700">
+                      {phone}
+                    </span>
+                    {secondaryPhone && (
+                      <span className="font-mono text-[11px] text-slate-500">
+                        / {secondaryPhone}
+                      </span>
+                    )}
                   </div>
-                  <div className="space-y-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="rounded bg-[#F85606] px-2 py-0.5 text-[10px] font-extrabold text-white uppercase">
-                        {addressLabel}
-                      </span>
-                      <span className="font-display text-sm font-extrabold text-slate-950">
-                        {fullName || 'BuyKit Shopper'}
-                      </span>
-                      <span className="font-mono text-xs font-bold text-slate-700">
-                        {phone}
-                      </span>
-                      {secondaryPhone && (
-                        <span className="font-mono text-xs text-slate-500">
-                          / {secondaryPhone}
-                        </span>
-                      )}
-                    </div>
 
-                    <p className="text-xs font-medium text-slate-700">
-                      {shippingAddress}, {cityDistrict} · Postal Code: {postalCode}
-                    </p>
+                  <p className="text-xs font-medium text-slate-700">
+                    {shippingAddress}, {cityDistrict} · {postalCode}
+                  </p>
 
-                    <div className="flex flex-wrap items-center gap-3 pt-1 text-[11px] text-slate-500">
-                      <span className="inline-flex items-center gap-1.5 font-semibold text-slate-700">
-                        <img
-                          src={currentCountry.flagUrl}
-                          alt={currentCountry.name}
-                          className="h-3.5 w-5 rounded-xs border border-slate-300 object-cover"
-                        />
-                        {currentCountry.name} ({currentCountry.shippingZone})
-                      </span>
-                      <span>·</span>
-                      <span>{email}</span>
-                    </div>
+                  <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500">
+                    <span className="inline-flex items-center gap-1 font-semibold text-slate-700">
+                      <img
+                        src={currentCountry.flagUrl}
+                        alt={currentCountry.name}
+                        className="h-3 w-4 rounded-xs border border-slate-300 object-cover"
+                      />
+                      {currentCountry.name}
+                    </span>
+                    <span>·</span>
+                    <span className="truncate">{email}</span>
                   </div>
                 </div>
+              </div>
 
-                <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => onOpenSettingsTab('address')}
+                className="inline-flex items-center gap-1 rounded-lg border border-orange-200 bg-[#FFF3EB] px-2.5 py-1 text-[11px] font-bold text-[#F85606] hover:bg-orange-100"
+              >
+                <Edit3 className="h-3 w-3" />
+                <span>Edit</span>
+              </button>
+            </div>
+          </div>
+
+          {/* 2. COMPACT REDESIGNED APPLIED COUPONS & VOUCHERS */}
+          <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-2xs">
+            {/* Slim Single-Row Header + Active Coupon + Change Trigger */}
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex min-w-0 items-center gap-2">
+                <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#FFF3EB] text-[#F85606]">
+                  <Ticket className="h-3.5 w-3.5" />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="font-display text-xs font-extrabold text-slate-950 uppercase">
+                      Coupons
+                    </span>
+                    <span className="rounded bg-[#FFF3EB] px-1.5 py-0.5 font-mono text-[10px] font-extrabold text-[#F85606]">
+                      {activeCoupon.code}
+                    </span>
+                    <span className="rounded bg-emerald-600 px-1.5 py-0.5 font-mono text-[10px] font-extrabold text-white">
+                      {couponDiscountAmount > 0 ? `-${formatLKR(couponDiscountAmount)}` : 'Rs. 0'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setIsCouponPickerOpen((prev) => !prev)}
+                className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-orange-200 bg-[#FFF3EB] px-2.5 py-1 text-[11px] font-extrabold text-[#F85606] transition-colors hover:bg-[#F85606] hover:text-white"
+              >
+                <span>{isCouponPickerOpen ? 'Close' : 'Change'}</span>
+                <ChevronRight
+                  className={`h-3 w-3 transition-transform ${
+                    isCouponPickerOpen ? 'rotate-90' : ''
+                  }`}
+                />
+              </button>
+            </div>
+
+            {/* Compact Expandable Coupon Switcher */}
+            {isCouponPickerOpen && (
+              <div className="mt-2.5 space-y-2 border-t border-slate-100 pt-2.5">
+                <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+                  {effectiveCoupons.map((coup) => {
+                    const isSelected = coup.id === selectedCouponId;
+                    const eligible = itemsSubtotal >= coup.minSpend;
+                    return (
+                      <button
+                        key={coup.id}
+                        type="button"
+                        onClick={() => {
+                          setSelectedCouponId(coup.id);
+                          setIsCouponPickerOpen(false);
+                        }}
+                        className={`flex items-center justify-between gap-2 rounded-lg border px-2.5 py-2 text-left transition-all ${
+                          isSelected
+                            ? 'border-[#F85606] bg-[#FFF5F0] ring-1 ring-[#F85606]/30'
+                            : 'border-slate-200 bg-slate-50/70 hover:border-orange-200 hover:bg-white'
+                        }`}
+                      >
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-mono text-[11px] font-extrabold text-[#F85606]">
+                              {coup.code}
+                            </span>
+                            <span className="truncate text-[11px] font-semibold text-slate-800">
+                              {coup.badgeText}
+                            </span>
+                          </div>
+                          <p className="truncate text-[10px] text-slate-500">
+                            {eligible ? coup.title : `Min spend ${formatLKR(coup.minSpend)}`}
+                          </p>
+                        </div>
+                        {isSelected && (
+                          <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-[#F85606] text-white">
+                            <Check className="h-2.5 w-2.5" />
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Compact Promo Code Row */}
+                <div className="flex gap-1.5">
+                  <input
+                    type="text"
+                    value={customCouponInput}
+                    onChange={(e) => setCustomCouponInput(e.target.value)}
+                    placeholder="Promo code (e.g. BUYKIT5000)"
+                    className="flex-1 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-[11px] uppercase text-slate-900 focus:border-[#F85606] focus:outline-none"
+                  />
                   <button
                     type="button"
-                    onClick={() => onOpenSettingsTab('address')}
-                    className="inline-flex items-center gap-1 rounded-xl border border-orange-200 bg-[#FFF3EB] px-3 py-1.5 text-xs font-bold text-[#F85606] hover:bg-orange-100"
+                    onClick={handleApplyCustomCoupon}
+                    className="rounded-lg bg-slate-900 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-slate-800"
                   >
-                    <Edit3 className="h-3.5 w-3.5" />
-                    <span>{t.editAddressProfile}</span>
+                    Apply
                   </button>
                 </div>
               </div>
-            </div>
+            )}
 
-            {/* 2. ORDER ITEMS LIST */}
-            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-2xs">
-              <div className="mb-3 flex items-center justify-between border-b border-slate-100 pb-3">
-                <div className="flex items-center gap-2">
-                  <ShoppingBag className="h-4 w-4 text-[#F85606]" />
-                  <h2 className="font-display text-sm font-bold text-slate-950 uppercase">
-                    {t.packageItems} ({totalUnits} {totalUnits === 1 ? 'Unit' : 'Units'})
-                  </h2>
-                </div>
-                <span className="text-xs font-semibold text-emerald-700">
-                  ● {t.inStock}
-                </span>
+            {/* Slim Single-Line BuyKit Coins Row */}
+            <div className="mt-2 flex items-center justify-between border-t border-slate-100 pt-2 text-[11px]">
+              <div className="flex items-center gap-1.5 text-slate-700">
+                <Sparkles className="h-3.5 w-3.5 text-amber-500" />
+                <span className="font-semibold">BuyKit Coins (1,250)</span>
               </div>
-
-              <div className="space-y-3">
-                {items.map((item) => {
-                  const itemDiscount = Math.max(0, item.originalPrice - item.price);
-                  return (
-                    <div
-                      key={item.id}
-                      className="flex flex-col justify-between gap-3 rounded-xl border border-slate-200/90 bg-slate-50/50 p-3.5 sm:flex-row sm:items-center"
-                    >
-                      <div className="flex items-start gap-3.5">
-                        <div className="relative h-20 w-20 shrink-0 overflow-hidden rounded-xl border border-slate-200 bg-white">
-                          <img
-                            src={resolveAssetUrl(item.imageUrl)}
-                            alt={item.title}
-                            loading="lazy"
-                            decoding="async"
-                            referrerPolicy="no-referrer"
-                            className="h-full w-full object-cover"
-                          />
-                          <span className="absolute top-1 left-1 rounded bg-emerald-600 px-1.5 py-0.5 text-[9px] font-extrabold text-white uppercase">
-                            In Stock
-                          </span>
-                        </div>
-
-                        <div className="min-w-0 flex-1">
-                          <p className="line-clamp-2 font-display text-sm font-bold text-slate-950">
-                            {item.title}
-                          </p>
-                          <div className="mt-1 flex flex-wrap items-center gap-2 font-mono text-xs tabular-nums">
-                            <span className="text-sm font-extrabold text-[#F85606]">
-                              {formatLKR(item.price)}
-                            </span>
-                            {item.originalPrice > item.price && (
-                              <>
-                                <span className="text-slate-400 line-through">
-                                  {formatLKR(item.originalPrice)}
-                                </span>
-                                <span className="rounded bg-emerald-50 px-1.5 py-0.5 font-sans text-[10px] font-bold text-emerald-700">
-                                  Save {formatLKR(itemDiscount)}/unit
-                                </span>
-                              </>
-                            )}
-                          </div>
-                          <p className="mt-1 text-[11px] font-medium text-slate-500">
-                            {freeShippingVoucherApplied
-                              ? '✓ Eligible for Free Islandwide Delivery (Rs. 0)'
-                              : `Standard Shipping (${formatLKR(currentCountry.baseShippingLkr)})`}
-                          </p>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center justify-between gap-3 border-t border-slate-200/70 pt-2.5 sm:border-t-0 sm:pt-0">
-                        <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-2 py-1">
-                          <button
-                            type="button"
-                            onClick={() => onUpdateItemQuantity(item, -1)}
-                            className="rounded p-1 text-slate-600 hover:bg-slate-100"
-                          >
-                            <Minus className="h-3.5 w-3.5" />
-                          </button>
-                          <span className="w-6 text-center font-mono text-xs font-extrabold text-slate-950 tabular-nums">
-                            {item.quantity}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => onUpdateItemQuantity(item, 1)}
-                            className="rounded p-1 text-slate-600 hover:bg-slate-100"
-                          >
-                            <Plus className="h-3.5 w-3.5" />
-                          </button>
-                        </div>
-
-                        <div className="text-right font-mono tabular-nums">
-                          <p className="text-sm font-extrabold text-slate-950">
-                            {formatLKR(item.price * item.quantity)}
-                          </p>
-                          <button
-                            type="button"
-                            onClick={() => onRemoveItem(item.id)}
-                            className="inline-flex items-center gap-1 font-sans text-[11px] font-semibold text-slate-400 hover:text-red-600"
-                          >
-                            <Trash2 className="h-3 w-3" />
-                            <span>Remove</span>
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
+              <button
+                type="button"
+                onClick={() => setRedeemBuyKitCoins((prev) => !prev)}
+                className={`rounded-md px-2.5 py-0.5 text-[10px] font-extrabold transition-colors ${
+                  redeemBuyKitCoins
+                    ? 'bg-emerald-600 text-white'
+                    : 'border border-slate-300 bg-white text-slate-700'
+                }`}
+              >
+                {redeemBuyKitCoins ? `-${formatLKR(coinsDiscountAmount)}` : 'Apply'}
+              </button>
             </div>
+          </div>
 
-            {/* 4. APPLIED COUPONS, VOUCHERS & COINS SELECTOR ("මොනවද add වෙලා තියෙන coupens, ඒව කැමතිනම් වෙනස් කරන්න පුලුවන්") */}
-            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-2xs">
-              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
-                <div className="flex items-center gap-2">
-                  <Ticket className="h-4 w-4 text-[#F85606]" />
-                  <h2 className="font-display text-sm font-bold text-slate-950 uppercase">
-                    {t.appliedCouponsTitle}
-                  </h2>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => setIsCouponPickerOpen((prev) => !prev)}
-                  className="inline-flex items-center gap-1 rounded-lg bg-[#FFF3EB] px-3 py-1 text-xs font-extrabold text-[#F85606] hover:bg-orange-100"
-                >
-                  <span>
-                    {isCouponPickerOpen ? 'Hide Coupon List' : 'Change / Select Coupon'}
+          {/* 3. SELECT PAYMENT METHOD (No default selection; required before continuing) */}
+          <div
+            ref={paymentSectionRef}
+            className={`rounded-2xl border bg-white p-4 shadow-2xs transition-all ${
+              paymentSelectionWarning
+                ? 'border-red-400 ring-2 ring-red-200'
+                : 'border-slate-200'
+            }`}
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
+              <div className="flex items-center gap-2">
+                <CreditCard className="h-4 w-4 text-[#F85606]" />
+                <h2 className="font-display text-xs font-extrabold text-slate-950 uppercase sm:text-sm">
+                  {t.selectPaymentMethod}
+                </h2>
+                {!selectedPaymentOption && (
+                  <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-extrabold text-amber-800">
+                    Required
                   </span>
-                  <ChevronRight
-                    className={`h-3.5 w-3.5 transition-transform ${
-                      isCouponPickerOpen ? 'rotate-90' : ''
-                    }`}
-                  />
-                </button>
+                )}
               </div>
+              <button
+                type="button"
+                onClick={() => onOpenSettingsTab('cards')}
+                className="text-[11px] font-bold text-[#F85606] underline"
+              >
+                + Add Card
+              </button>
+            </div>
 
-              {/* Currently Applied Coupon Banner */}
-              <div className="mt-3.5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-orange-200 bg-gradient-to-r from-[#FFF5F0] to-amber-50/50 p-3.5">
-                <div className="flex items-center gap-3">
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#F85606] font-mono text-xs font-extrabold text-white">
-                    %
-                  </div>
-                  <div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-mono text-xs font-extrabold text-[#F85606]">
-                        {activeCoupon.code}
-                      </span>
-                      <span className="rounded bg-emerald-600 px-2 py-0.5 text-[10px] font-extrabold text-white uppercase">
-                        {couponDiscountAmount > 0
-                          ? `Saving ${formatLKR(couponDiscountAmount)}`
-                          : 'No Discount Active'}
-                      </span>
-                    </div>
-                    <p className="mt-0.5 text-xs font-bold text-slate-900">
-                      {activeCoupon.title}
-                    </p>
-                    <p className="text-[11px] text-slate-500">{activeCoupon.subtitle}</p>
-                  </div>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => setIsCouponPickerOpen((prev) => !prev)}
-                  className="rounded-xl border border-[#F85606] bg-white px-3.5 py-2 text-xs font-extrabold text-[#F85606] hover:bg-[#F85606] hover:text-white"
-                >
-                  Change Coupon
-                </button>
+            {paymentSelectionWarning && !selectedPaymentOption && (
+              <div className="mt-2.5 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700">
+                Please select a payment method below before clicking Pay Now.
               </div>
+            )}
 
-              {/* Expandable Coupon Switcher List */}
-              {isCouponPickerOpen && (
-                <div className="mt-3.5 space-y-2.5 rounded-xl border border-slate-200 bg-slate-50 p-3.5">
-                  <p className="text-xs font-bold text-slate-800">
-                    Select any available BuyKit Coupon below to switch your discount:
+            <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+              {/* Payment 1: Credit / Debit Card */}
+              <button
+                type="button"
+                onClick={() => handleSelectPaymentType('card_express')}
+                className={`flex items-start gap-2.5 rounded-xl border p-3 text-left transition-all ${
+                  selectedPaymentOption === 'card_express'
+                    ? 'border-[#F85606] bg-[#FFF5F0] ring-2 ring-[#F85606]/20'
+                    : 'border-slate-200 bg-slate-50/60 hover:bg-white'
+                }`}
+              >
+                <CreditCard className="mt-0.5 h-4 w-4 shrink-0 text-[#F85606]" />
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-extrabold text-slate-950">
+                    Credit / Debit Card (Visa / Mastercard)
                   </p>
-                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                    {effectiveCoupons.map((coup) => {
-                      const isSelected = coup.id === selectedCouponId;
-                      const eligible = itemsSubtotal >= coup.minSpend;
-                      return (
-                        <button
-                          key={coup.id}
-                          type="button"
-                          onClick={() => setSelectedCouponId(coup.id)}
-                          className={`flex flex-col justify-between rounded-xl border p-3 text-left transition-all ${
-                            isSelected
-                              ? 'border-[#F85606] bg-white ring-2 ring-[#F85606]/25'
-                              : 'border-slate-200 bg-white/80 hover:border-orange-200'
-                          }`}
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="rounded bg-[#FFF3EB] px-2 py-0.5 font-mono text-xs font-extrabold text-[#F85606]">
-                              {coup.code}
-                            </span>
-                            {isSelected ? (
-                              <span className="inline-flex items-center gap-1 text-[11px] font-extrabold text-emerald-700">
-                                <Check className="h-3.5 w-3.5" /> Selected
-                              </span>
-                            ) : (
-                              <span className="text-[10px] font-bold text-slate-400">
-                                {eligible
-                                  ? 'Click to Apply'
-                                  : `Min ${formatLKR(coup.minSpend)}`}
-                              </span>
-                            )}
-                          </div>
-                          <p className="mt-1.5 text-xs font-bold text-slate-900">
-                            {coup.title}
-                          </p>
-                          <p className="mt-0.5 text-[11px] text-slate-500">
-                            {coup.subtitle}
-                          </p>
-                        </button>
-                      );
-                    })}
-                  </div>
-
-                  {/* Custom Promo Code Input */}
-                  <div className="flex gap-2 pt-2">
-                    <input
-                      type="text"
-                      value={customCouponInput}
-                      onChange={(e) => setCustomCouponInput(e.target.value)}
-                      placeholder="Enter promo code (e.g., BUYKIT5000, MEGA2500)..."
-                      className="flex-1 rounded-xl border border-slate-300 bg-white px-3.5 py-2 font-mono text-xs uppercase text-slate-900 focus:border-[#F85606] focus:outline-none"
-                    />
-                    <button
-                      type="button"
-                      onClick={handleApplyCustomCoupon}
-                      className="rounded-xl bg-slate-900 px-4 py-2 text-xs font-bold text-white hover:bg-slate-800"
-                    >
-                      Apply Code
-                    </button>
-                  </div>
+                  <p className="mt-0.5 text-[11px] text-slate-500">
+                    Instant 3D-Secure LKR Payment · Saved or new card
+                  </p>
                 </div>
-              )}
+              </button>
 
-              {/* BuyKit Reward Coins Toggle */}
-              <div className="mt-3 flex items-center justify-between rounded-xl border border-slate-200/80 bg-slate-50 px-3.5 py-2.5 text-xs">
-                <div className="flex items-center gap-2">
-                  <Sparkles className="h-4 w-4 text-amber-500" />
-                  <span className="font-semibold text-slate-800">
-                    BuyKit Reward Coins (1,250 Coins Available)
-                  </span>
+              {/* Payment 2: Cash on Delivery */}
+              <button
+                type="button"
+                onClick={() => handleSelectPaymentType('cod')}
+                className={`flex items-start gap-2.5 rounded-xl border p-3 text-left transition-all ${
+                  selectedPaymentOption === 'cod'
+                    ? 'border-[#F85606] bg-[#FFF5F0] ring-2 ring-[#F85606]/20'
+                    : 'border-slate-200 bg-slate-50/60 hover:bg-white'
+                }`}
+              >
+                <Wallet className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-extrabold text-slate-950">
+                    Cash on Delivery (COD)
+                  </p>
+                  <p className="mt-0.5 text-[11px] text-slate-500">
+                    Pay in LKR cash at your doorstep upon delivery
+                  </p>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setRedeemBuyKitCoins((prev) => !prev)}
-                  className={`rounded-lg px-3 py-1 text-xs font-extrabold transition-colors ${
-                    redeemBuyKitCoins
-                      ? 'bg-emerald-600 text-white'
-                      : 'border border-slate-300 bg-white text-slate-700'
-                  }`}
-                >
-                  {redeemBuyKitCoins
-                    ? `Applied (-${formatLKR(coinsDiscountAmount)})`
-                    : 'Redeem Coins'}
-                </button>
-              </div>
+              </button>
+
+              {/* Payment 3: Koko / BuyKit PayLater — Disabled Gray Coming Soon */}
+              <button
+                type="button"
+                disabled
+                aria-disabled="true"
+                className="flex cursor-not-allowed items-start gap-2.5 rounded-xl border border-slate-200 bg-slate-100 p-3 text-left opacity-70 grayscale"
+              >
+                <CalendarClock className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" />
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center justify-between gap-1.5">
+                    <p className="text-xs font-extrabold text-slate-500">
+                      Koko / BuyKit PayLater (3x 0%)
+                    </p>
+                    <span className="rounded bg-slate-200 px-1.5 py-0.5 text-[9px] font-extrabold tracking-wide text-slate-600 uppercase">
+                      Coming Soon
+                    </span>
+                  </div>
+                  <p className="mt-0.5 text-[11px] text-slate-400">
+                    3x interest-free installments coming soon
+                  </p>
+                </div>
+              </button>
+
+              {/* Payment 4: LankaQR / Scan QR Code to Pay */}
+              <button
+                type="button"
+                onClick={() => handleSelectPaymentType('lanka_qr')}
+                className={`flex items-start gap-2.5 rounded-xl border p-3 text-left transition-all ${
+                  selectedPaymentOption === 'lanka_qr'
+                    ? 'border-[#F85606] bg-[#FFF5F0] ring-2 ring-[#F85606]/20'
+                    : 'border-slate-200 bg-slate-50/60 hover:bg-white'
+                }`}
+              >
+                <QrCode className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-extrabold text-slate-950">
+                    Scan QR Code (LankaQR / Bank QR)
+                  </p>
+                  <p className="mt-0.5 text-[11px] text-slate-500">
+                    BOC, People&apos;s, Sampath, Q+, Solo, FriMi or Genie
+                  </p>
+                </div>
+              </button>
             </div>
 
-            {/* 5. PAYMENT OPTION SELECTOR ("ඒකෙදි තමයි payment option එක select කරන්නෙ") */}
-            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-2xs">
-              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
-                <div className="flex items-center gap-2">
-                  <CreditCard className="h-4 w-4 text-[#F85606]" />
-                  <h2 className="font-display text-sm font-bold text-slate-950 uppercase">
-                    {t.selectPaymentMethod}
-                  </h2>
+            {/* Saved Credit/Debit Card Picker when Card option is selected */}
+            {selectedPaymentOption === 'card_express' && (
+              <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3.5">
+                <div className="mb-2.5 flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-800">
+                    Choose Saved Credit / Debit Card:
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => onOpenSettingsTab('cards')}
+                    className="inline-flex items-center gap-1 text-xs font-extrabold text-[#F85606] hover:underline"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    <span>Add Another Card</span>
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => onOpenSettingsTab('cards')}
-                  className="text-xs font-bold text-[#F85606] underline"
-                >
-                  + Add New Credit / Debit Card
-                </button>
-              </div>
 
-              <div className="mt-3.5 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-                {/* Payment 1: Credit / Debit Card */}
-                <button
-                  type="button"
-                  onClick={() => handleSelectPaymentType('card_express')}
-                  className={`flex items-start gap-3 rounded-xl border p-3.5 text-left transition-all ${
-                    selectedPaymentOption === 'card_express'
-                      ? 'border-[#F85606] bg-[#FFF5F0] ring-2 ring-[#F85606]/20'
-                      : 'border-slate-200 bg-slate-50/60 hover:bg-white'
-                  }`}
-                >
-                  <CreditCard className="mt-0.5 h-5 w-5 shrink-0 text-[#F85606]" />
-                  <div>
-                    <p className="text-xs font-extrabold text-slate-950">
-                      Credit / Debit Card (Visa / Mastercard)
-                    </p>
-                    <p className="mt-0.5 text-[11px] text-slate-500">
-                      Instant 3D-Secure LKR Payment · Use saved card or add new
-                    </p>
-                  </div>
-                </button>
-
-                {/* Payment 2: Cash on Delivery */}
-                <button
-                  type="button"
-                  onClick={() => handleSelectPaymentType('cod')}
-                  className={`flex items-start gap-3 rounded-xl border p-3.5 text-left transition-all ${
-                    selectedPaymentOption === 'cod'
-                      ? 'border-[#F85606] bg-[#FFF5F0] ring-2 ring-[#F85606]/20'
-                      : 'border-slate-200 bg-slate-50/60 hover:bg-white'
-                  }`}
-                >
-                  <Wallet className="mt-0.5 h-5 w-5 shrink-0 text-emerald-600" />
-                  <div>
-                    <p className="text-xs font-extrabold text-slate-950">
-                      Cash on Delivery (COD)
-                    </p>
-                    <p className="mt-0.5 text-[11px] text-slate-500">
-                      Pay in LKR cash at your doorstep when package arrives
-                    </p>
-                  </div>
-                </button>
-
-                {/* Payment 3: Koko / BuyKit PayLater 3x Installments */}
-                <button
-                  type="button"
-                  onClick={() => handleSelectPaymentType('koko_installments')}
-                  className={`flex items-start gap-3 rounded-xl border p-3.5 text-left transition-all ${
-                    selectedPaymentOption === 'koko_installments'
-                      ? 'border-[#F85606] bg-[#FFF5F0] ring-2 ring-[#F85606]/20'
-                      : 'border-slate-200 bg-slate-50/60 hover:bg-white'
-                  }`}
-                >
-                  <CalendarClock className="mt-0.5 h-5 w-5 shrink-0 text-blue-600" />
-                  <div>
-                    <p className="text-xs font-extrabold text-slate-950">
-                      BuyKit PayLater / Koko (3x 0% Interest)
-                    </p>
-                    <p className="mt-0.5 font-mono text-[11px] font-bold text-blue-700">
-                      3 × {formatLKR(Math.round(finalPayableAmount / 3))} / month
-                    </p>
-                  </div>
-                </button>
-
-                {/* Payment 4: LankaQR / Scan QR Code to Pay */}
-                <button
-                  type="button"
-                  onClick={() => handleSelectPaymentType('lanka_qr')}
-                  className={`flex items-start gap-3 rounded-xl border p-3.5 text-left transition-all ${
-                    selectedPaymentOption === 'lanka_qr'
-                      ? 'border-[#F85606] bg-[#FFF5F0] ring-2 ring-[#F85606]/20'
-                      : 'border-slate-200 bg-slate-50/60 hover:bg-white'
-                  }`}
-                >
-                  <QrCode className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" />
-                  <div>
-                    <p className="text-xs font-extrabold text-slate-950">
-                      Scan QR Code (LankaQR / Bank QR)
-                    </p>
-                    <p className="mt-0.5 text-[11px] text-slate-500">
-                      Scan QR with BOC, People&apos;s, Sampath, Q+, Solo, FriMi or Genie
-                    </p>
-                  </div>
-                </button>
-              </div>
-
-              {/* Saved Credit/Debit Card Picker when Card option is selected */}
-              {selectedPaymentOption === 'card_express' && (
-                <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3.5">
-                  <div className="mb-2.5 flex items-center justify-between">
-                    <span className="text-xs font-bold text-slate-800">
-                      Choose Saved Credit / Debit Card:
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => onOpenSettingsTab('cards')}
-                      className="inline-flex items-center gap-1 text-xs font-extrabold text-[#F85606] hover:underline"
-                    >
-                      <Plus className="h-3.5 w-3.5" />
-                      <span>Add Another Card</span>
-                    </button>
-                  </div>
-
-                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                    {savedCards.map((card) => {
-                      const isPicked = card.id === (selectedCardObj?.id || '');
-                      return (
-                        <button
-                          key={card.id}
-                          type="button"
-                          onClick={() => setSelectedCardId(card.id)}
-                          className={`flex items-center justify-between rounded-xl border p-3 text-left transition-all ${
-                            isPicked
-                              ? 'border-[#F85606] bg-white ring-2 ring-[#F85606]/20'
-                              : 'border-slate-200 bg-white/80 hover:border-orange-200'
-                          }`}
-                        >
-                          <div>
-                            <div className="flex items-center gap-1.5">
-                              <span className="rounded bg-slate-900 px-1.5 py-0.5 font-mono text-[10px] font-bold text-white uppercase">
-                                {card.brand}
-                              </span>
-                              <span className="font-mono text-xs font-extrabold text-slate-900">
-                                •••• {card.last4}
-                              </span>
-                              <span className="text-[10px] font-semibold text-slate-500">
-                                ({card.cardType})
-                              </span>
-                            </div>
-                            <p className="mt-1 text-[11px] text-slate-500">
-                              {card.bankName} · Exp {card.expiry}
-                            </p>
-                          </div>
-                          {isPicked && (
-                            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[#F85606] text-white">
-                              <Check className="h-3 w-3" />
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  {savedCards.map((card) => {
+                    const isPicked = card.id === (selectedCardObj?.id || '');
+                    return (
+                      <button
+                        key={card.id}
+                        type="button"
+                        onClick={() => setSelectedCardId(card.id)}
+                        className={`flex items-center justify-between rounded-xl border p-3 text-left transition-all ${
+                          isPicked
+                            ? 'border-[#F85606] bg-white ring-2 ring-[#F85606]/20'
+                            : 'border-slate-200 bg-white/80 hover:border-orange-200'
+                        }`}
+                      >
+                        <div>
+                          <div className="flex items-center gap-1.5">
+                            <span className="rounded bg-slate-900 px-1.5 py-0.5 font-mono text-[10px] font-bold text-white uppercase">
+                              {card.brand}
                             </span>
-                          )}
-                        </button>
-                      );
-                    })}
+                            <span className="font-mono text-xs font-extrabold text-slate-900">
+                              •••• {card.last4}
+                            </span>
+                            <span className="text-[10px] font-semibold text-slate-500">
+                              ({card.cardType})
+                            </span>
+                          </div>
+                          <p className="mt-1 text-[11px] text-slate-500">
+                            {card.bankName} · Exp {card.expiry}
+                          </p>
+                        </div>
+                        {isPicked && (
+                          <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[#F85606] text-white">
+                            <Check className="h-3 w-3" />
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Koko 3x 0% Schedule Preview */}
+            {selectedPaymentOption === 'koko_installments' && (
+              <div className="mt-4 rounded-xl border border-blue-200 bg-blue-50/70 p-3.5 text-xs text-blue-950">
+                <p className="font-extrabold">
+                  Koko 3x 0% Interest Selected · 3 × {formatLKR(Math.round(finalPayableAmount / 3))}
+                </p>
+                <p className="mt-0.5 text-[11px] text-blue-800">
+                  Click &ldquo;Pay Now&rdquo; below to review your final order summary and complete Koko verification.
+                </p>
+              </div>
+            )}
+
+            {/* LANKAQR Info Preview */}
+            {selectedPaymentOption === 'lanka_qr' && (
+              <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50/70 p-3.5 text-xs text-amber-950">
+                <p className="font-extrabold">
+                  LANKAQR Instant Scan &amp; Pay Selected
+                </p>
+                <p className="mt-0.5 text-[11px] text-amber-800">
+                  Click &ldquo;Pay Now&rdquo; below to review your final order summary and scan your unique LANKAQR code.
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+      ) : (
+        /* =========================================================
+           STEP 2: LOCKED READ-ONLY REVIEW & ORDER SUMMARY PAGE
+           (Nothing can be edited here — displays Selected Products,
+            Selected Coupon, Selected Address, Selected Payment Method & Summary;
+            auto-scrolls by default down to the Order Summary section)
+           ========================================================= */
+        <div className="space-y-4">
+          {/* 1. SELECTED PRODUCTS (READ-ONLY — NO EDIT / DELETE CONTROLS) */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-2xs">
+            <div className="mb-3 flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2">
+                <ShoppingBag className="h-4 w-4 text-[#F85606]" />
+                <h2 className="font-display text-sm font-bold text-slate-950 uppercase">
+                  Selected Products ({totalUnits} {totalUnits === 1 ? 'Unit' : 'Units'})
+                </h2>
+              </div>
+              <span className="inline-flex items-center gap-1 text-[11px] font-bold text-slate-400">
+                <Lock className="h-3 w-3" /> Locked
+              </span>
+            </div>
+
+            <div className="space-y-3">
+              {items.map((item) => (
+                <div
+                  key={item.id}
+                  className="flex items-center justify-between gap-3 rounded-xl border border-slate-200/80 bg-slate-50/60 p-3"
+                >
+                  <div className="flex min-w-0 items-center gap-3">
+                    <div className="h-16 w-16 shrink-0 overflow-hidden rounded-xl border border-slate-200 bg-white">
+                      <img
+                        src={resolveAssetUrl(item.imageUrl)}
+                        alt={item.title}
+                        loading="lazy"
+                        decoding="async"
+                        referrerPolicy="no-referrer"
+                        className="h-full w-full object-cover"
+                      />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="line-clamp-2 font-display text-xs font-bold text-slate-950 sm:text-sm">
+                        {item.title}
+                      </p>
+                      <div className="mt-1 flex flex-wrap items-center gap-2">
+                        <span className="rounded bg-slate-200/80 px-2 py-0.5 text-[10px] font-bold text-slate-700">
+                          {item.category}
+                        </span>
+                        <span className="font-mono text-xs font-extrabold text-[#F85606] tabular-nums">
+                          {formatLKR(item.price)}
+                        </span>
+                        {item.originalPrice > item.price && (
+                          <span className="font-mono text-[11px] text-slate-400 line-through tabular-nums">
+                            {formatLKR(item.originalPrice)}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="shrink-0 text-right font-mono tabular-nums">
+                    <span className="inline-block rounded-md bg-slate-900 px-2 py-0.5 text-[10px] font-extrabold text-white">
+                      Qty: {item.quantity}
+                    </span>
+                    <p className="mt-1 text-xs font-extrabold text-slate-950 sm:text-sm">
+                      {formatLKR(item.price * item.quantity)}
+                    </p>
                   </div>
                 </div>
-              )}
+              ))}
+            </div>
+          </div>
 
-              {/* Live Koko 3x 0% Installment Schedule Preview when Koko is selected */}
-              {selectedPaymentOption === 'koko_installments' && (
-                <KokoPaymentPanel
-                  variant="inline"
-                  amountLkr={finalPayableAmount}
-                  customerPhone={phone}
-                  isSubmitting={creatingIntent || checkoutSubmitting}
-                  onLaunchKokoCheckout={handleTriggerCheckoutOrder}
-                />
-              )}
+          {/* 2. SELECTED SHIPPING ADDRESS (READ-ONLY) */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-2xs">
+            <div className="mb-3 flex items-center justify-between border-b border-slate-100 pb-2.5">
+              <div className="flex items-center gap-2">
+                <MapPin className="h-4 w-4 text-[#F85606]" />
+                <h2 className="font-display text-sm font-bold text-slate-950 uppercase">
+                  Shipping Address
+                </h2>
+              </div>
+              <span className="inline-flex items-center gap-1 text-[11px] font-bold text-slate-400">
+                <Lock className="h-3 w-3" /> Locked
+              </span>
+            </div>
 
-              {/* Live Scannable LankaQR Code Preview when QR Payment is selected */}
-              {selectedPaymentOption === 'lanka_qr' && (
-                <LankaQrPaymentPanel
-                  variant="inline"
-                  orderId={`BKQR-${totalUnits}X-${Math.round(finalPayableAmount)}`}
-                  amountLkr={finalPayableAmount}
-                  merchantId="1228450"
-                  merchantName="BUYKIT WITH PRAMU"
-                  customerPhone={phone}
-                  onOpenFullQrModal={handleTriggerCheckoutOrder}
-                />
-              )}
+            <div className="space-y-1 text-xs">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="rounded bg-[#F85606] px-2 py-0.5 text-[10px] font-extrabold text-white uppercase">
+                  {addressLabel}
+                </span>
+                <span className="font-display text-sm font-extrabold text-slate-950">
+                  {fullName || 'BuyKit Shopper'}
+                </span>
+                <span className="font-mono font-bold text-slate-700">{phone}</span>
+                {secondaryPhone && (
+                  <span className="font-mono text-slate-500">/ {secondaryPhone}</span>
+                )}
+              </div>
+              <p className="font-medium text-slate-700">
+                {shippingAddress}, {cityDistrict} · Postal Code: {postalCode}
+              </p>
+              <div className="flex flex-wrap items-center gap-2 pt-0.5 text-[11px] text-slate-500">
+                <span className="inline-flex items-center gap-1.5 font-semibold text-slate-700">
+                  <img
+                    src={currentCountry.flagUrl}
+                    alt={currentCountry.name}
+                    className="h-3.5 w-5 rounded-xs border border-slate-300 object-cover"
+                  />
+                  {currentCountry.name}
+                </span>
+                <span>·</span>
+                <span>{email}</span>
+              </div>
+            </div>
+          </div>
 
-              {gatewayError && !isPayHereGatewayModalOpen && !isKokoModalOpen && (
-                <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-xs font-semibold text-red-700">
-                  {gatewayError}
+          {/* 3. SELECTED COUPON & VOUCHERS (READ-ONLY) */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-2xs">
+            <div className="mb-3 flex items-center justify-between border-b border-slate-100 pb-2.5">
+              <div className="flex items-center gap-2">
+                <Ticket className="h-4 w-4 text-[#F85606]" />
+                <h2 className="font-display text-sm font-bold text-slate-950 uppercase">
+                  Selected Coupon &amp; Vouchers
+                </h2>
+              </div>
+              <span className="inline-flex items-center gap-1 text-[11px] font-bold text-slate-400">
+                <Lock className="h-3 w-3" /> Locked
+              </span>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-orange-200 bg-[#FFF5F0] p-3.5">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-xs font-extrabold text-[#F85606]">
+                    {activeCoupon.code}
+                  </span>
+                  <span className="rounded bg-emerald-600 px-2 py-0.5 text-[10px] font-extrabold text-white uppercase">
+                    {couponDiscountAmount > 0
+                      ? `-${formatLKR(couponDiscountAmount)}`
+                      : 'No Coupon Discount'}
+                  </span>
                 </div>
+                <p className="mt-0.5 text-xs font-bold text-slate-900">{activeCoupon.title}</p>
+              </div>
+              {redeemBuyKitCoins && coinsDiscountAmount > 0 && (
+                <span className="inline-flex items-center gap-1 rounded-lg bg-amber-100 px-2.5 py-1 text-[11px] font-extrabold text-amber-900">
+                  <Sparkles className="h-3.5 w-3.5 text-amber-600" />
+                  Coins: -{formatLKR(coinsDiscountAmount)}
+                </span>
               )}
             </div>
           </div>
 
-          {/* RIGHT 5 COLUMNS: STICKY ORDER BILL SUMMARY & FINAL TOTAL PAYABLE ("අන්තිමට total ගෙවන්න ඕන ගනන") */}
-          <div className="lg:col-span-5">
-            <div className="sticky top-20 rounded-2xl border-2 border-orange-200 bg-white p-5 shadow-md sm:p-6">
-              <div className="flex items-center justify-between border-b border-slate-100 pb-3.5">
-                <h2 className="font-display text-base font-extrabold text-slate-950">
-                  {t.finalBillSummary}
+          {/* 4. SELECTED PAYMENT METHOD (READ-ONLY) */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-2xs">
+            <div className="mb-3 flex items-center justify-between border-b border-slate-100 pb-2.5">
+              <div className="flex items-center gap-2">
+                <CreditCard className="h-4 w-4 text-[#F85606]" />
+                <h2 className="font-display text-sm font-bold text-slate-950 uppercase">
+                  Selected Payment Method
                 </h2>
-                <span className="rounded-md bg-emerald-50 px-2.5 py-0.5 text-[11px] font-extrabold text-emerald-700">
-                  LKR Official Invoice
+              </div>
+              <span className="inline-flex items-center gap-1 text-[11px] font-bold text-slate-400">
+                <Lock className="h-3 w-3" /> Locked
+              </span>
+            </div>
+
+            <div className="flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3.5">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#FFF3EB] text-[#F85606]">
+                {selectedPaymentOption === 'card_express' && <CreditCard className="h-5 w-5" />}
+                {selectedPaymentOption === 'cod' && <Wallet className="h-5 w-5 text-emerald-600" />}
+                {selectedPaymentOption === 'koko_installments' && (
+                  <CalendarClock className="h-5 w-5 text-blue-600" />
+                )}
+                {selectedPaymentOption === 'lanka_qr' && (
+                  <QrCode className="h-5 w-5 text-amber-600" />
+                )}
+              </div>
+              <div>
+                <p className="text-xs font-extrabold text-slate-950 sm:text-sm">
+                  {paymentMethodLabel}
+                </p>
+                <p className="text-[11px] text-slate-500">
+                  {selectedPaymentOption === 'card_express' && selectedCardObj
+                    ? `${selectedCardObj.bankName} · ${selectedCardObj.brand} •••• ${selectedCardObj.last4}`
+                    : selectedPaymentOption === 'koko_installments'
+                    ? `3 interest-free monthly payments of ${formatLKR(Math.round(finalPayableAmount / 3))}`
+                    : selectedPaymentOption === 'lanka_qr'
+                    ? 'Scan official LANKAQR with any Sri Lankan banking app'
+                    : 'Pay cash in LKR when your package is delivered'}
+                </p>
+              </div>
+            </div>
+
+            {/* Live Koko / LANKAQR panels available in Review Step for direct verification */}
+            {selectedPaymentOption === 'koko_installments' && (
+              <KokoPaymentPanel
+                variant="inline"
+                amountLkr={finalPayableAmount}
+                customerPhone={phone}
+                isSubmitting={creatingIntent || checkoutSubmitting}
+                onLaunchKokoCheckout={handleTriggerCheckoutOrder}
+              />
+            )}
+
+            {selectedPaymentOption === 'lanka_qr' && (
+              <LankaQrPaymentPanel
+                variant="inline"
+                orderId={`BKQR-${totalUnits}X-${Math.round(finalPayableAmount)}`}
+                amountLkr={finalPayableAmount}
+                merchantId="1228450"
+                merchantName="BUYKIT WITH PRAMU"
+                customerPhone={phone}
+                onOpenFullQrModal={handleTriggerCheckoutOrder}
+              />
+            )}
+
+            {gatewayError && !isPayHereGatewayModalOpen && !isKokoModalOpen && (
+              <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-xs font-semibold text-red-700">
+                {gatewayError}
+              </div>
+            )}
+          </div>
+
+          {/* 5. ORDER SUMMARY (AT THE BOTTOM — DEFAULT SCROLL TARGET!) */}
+          <div
+            ref={summarySectionRef}
+            className="scroll-mb-24 rounded-2xl border-2 border-orange-200 bg-white p-5 shadow-md sm:p-6"
+          >
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3.5">
+              <h2 className="font-display text-base font-extrabold text-slate-950">
+                {t.finalBillSummary}
+              </h2>
+              <span className="rounded-md bg-emerald-50 px-2.5 py-0.5 text-[11px] font-extrabold text-emerald-700">
+                LKR Official Summary
+              </span>
+            </div>
+
+            <div className="mt-4 space-y-2.5 font-mono text-xs tabular-nums">
+              <div className="flex items-center justify-between text-slate-500">
+                <span className="font-sans">
+                  Original Retail Value ({totalUnits} {totalUnits === 1 ? 'item' : 'items'})
+                </span>
+                <span className="line-through">{formatLKR(itemsOriginalTotal)}</span>
+              </div>
+
+              <div className="flex items-center justify-between text-emerald-700">
+                <span className="font-sans">Storefront Deal Discount</span>
+                <span>- {formatLKR(storefrontDealSavings)}</span>
+              </div>
+
+              <div className="flex items-center justify-between border-t border-slate-100 pt-2 font-bold text-slate-900">
+                <span className="font-sans">Items Subtotal</span>
+                <span>{formatLKR(itemsSubtotal)}</span>
+              </div>
+
+              <div className="flex items-center justify-between text-emerald-700">
+                <span className="font-sans">
+                  Coupon Applied (<strong>{activeCoupon.code}</strong>)
+                </span>
+                <span className="font-extrabold">
+                  {couponDiscountAmount > 0 ? `- ${formatLKR(couponDiscountAmount)}` : 'Rs. 0'}
                 </span>
               </div>
 
-              {/* Line-by-Line Price, Coupons & Delivery Fee Calculation */}
-              <div className="mt-4 space-y-2.5 font-mono text-xs tabular-nums">
-                <div className="flex items-center justify-between text-slate-500">
-                  <span className="font-sans">
-                    Original Retail Value ({totalUnits} {totalUnits === 1 ? 'item' : 'items'})
-                  </span>
-                  <span className="line-through">{formatLKR(itemsOriginalTotal)}</span>
-                </div>
-
-                <div className="flex items-center justify-between text-emerald-700">
-                  <span className="font-sans">Storefront Deal Discount</span>
-                  <span>- {formatLKR(storefrontDealSavings)}</span>
-                </div>
-
-                <div className="flex items-center justify-between border-t border-slate-100 pt-2 font-bold text-slate-900">
-                  <span className="font-sans">Items Subtotal</span>
-                  <span>{formatLKR(itemsSubtotal)}</span>
-                </div>
-
-                {/* Coupon Discount Line */}
-                <div className="flex items-center justify-between text-emerald-700">
-                  <span className="font-sans">
-                    Coupon Applied (<strong>{activeCoupon.code}</strong>)
-                  </span>
-                  <span className="font-extrabold">
-                    {couponDiscountAmount > 0
-                      ? `- ${formatLKR(couponDiscountAmount)}`
-                      : 'Rs. 0'}
-                  </span>
-                </div>
-
-                {/* BuyKit Coins Line */}
-                <div className="flex items-center justify-between text-emerald-700">
-                  <span className="font-sans">BuyKit Coins Cashback</span>
-                  <span>
-                    {coinsDiscountAmount > 0
-                      ? `- ${formatLKR(coinsDiscountAmount)}`
-                      : 'Rs. 0'}
-                  </span>
-                </div>
-
-                {hubCollectionBonus > 0 && (
-                  <div className="flex items-center justify-between text-emerald-700">
-                    <span className="font-sans">Pickup Hub Rebate</span>
-                    <span>- {formatLKR(hubCollectionBonus)}</span>
-                  </div>
-                )}
-
-                {/* Delivery Fee Line ("dwlivery fee තියේද ,නැද්ද කියල") */}
-                <div className="flex items-center justify-between border-t border-slate-100 pt-2">
-                  <span className="font-sans font-semibold text-slate-800">
-                    Delivery Fee ({deliveryMethodLabel.split('(')[0].trim()})
-                  </span>
-                  {deliveryFeeAmount === 0 ? (
-                    <span className="rounded bg-emerald-100 px-2 py-0.5 font-sans text-xs font-extrabold text-emerald-800">
-                      FREE (Rs. 0)
-                    </span>
-                  ) : (
-                    <span className="font-extrabold text-[#F85606]">
-                      + {formatLKR(deliveryFeeAmount)}
-                    </span>
-                  )}
-                </div>
-
-                {/* Selected Payment Mode */}
-                <div className="flex items-center justify-between border-t border-slate-100 pt-2 text-[11px] text-slate-600">
-                  <span className="font-sans">Selected Payment:</span>
-                  <span className="font-sans font-bold text-slate-900">
-                    {paymentMethodLabel}
-                  </span>
-                </div>
-
-                {/* FINAL TOTAL PAYABLE BLOCK ("අන්තිමට total ගෙවන්න ඕන ගනන") */}
-                <div className="mt-3 rounded-xl border border-orange-200 bg-gradient-to-r from-[#FFF5F0] to-orange-50 p-4">
-                  <div className="flex items-baseline justify-between">
-                    <div>
-                      <span className="block font-sans text-xs font-extrabold tracking-wide text-slate-900 uppercase">
-                        {t.totalAmountToPay}
-                      </span>
-                      <span className="font-sans text-[11px] font-semibold text-emerald-700">
-                        {t.youSave}: {formatLKR(totalCombinedSavings)}
-                      </span>
-                    </div>
-                    <span className="text-2xl font-extrabold text-[#F85606] sm:text-3xl">
-                      {formatLKR(finalPayableAmount)}
-                    </span>
-                  </div>
-                </div>
+              <div className="flex items-center justify-between text-emerald-700">
+                <span className="font-sans">BuyKit Coins Cashback</span>
+                <span>
+                  {coinsDiscountAmount > 0 ? `- ${formatLKR(coinsDiscountAmount)}` : 'Rs. 0'}
+                </span>
               </div>
 
-              {/* Place Order Button */}
-              <div className="mt-5 space-y-2.5">
-                {!currentUser && (
-                  <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
-                    <div className="flex items-center gap-1.5 font-bold">
-                      <Lock className="h-3.5 w-3.5 text-[#F85606]" />
-                      <span>Sign in with Google to Confirm & Track Your Order</span>
-                    </div>
-                    <p className="mt-0.5 text-[11px] text-amber-800">
-                      Clicking Place Order below will let you sign in and immediately confirm this order.
-                    </p>
-                  </div>
-                )}
+              {hubCollectionBonus > 0 && (
+                <div className="flex items-center justify-between text-emerald-700">
+                  <span className="font-sans">Pickup Hub Rebate</span>
+                  <span>- {formatLKR(hubCollectionBonus)}</span>
+                </div>
+              )}
 
-                <button
-                  type="button"
-                  disabled={checkoutSubmitting || creatingIntent}
-                  onClick={handleTriggerCheckoutOrder}
-                  className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[#F85606] px-6 py-4 text-base font-extrabold text-white shadow-lg transition-all hover:bg-[#d94800] disabled:opacity-50"
-                >
-                  <Bolt className="h-5 w-5" />
-                  <span>
-                    {creatingIntent
-                      ? 'Processing Payment...'
-                      : checkoutSubmitting
-                      ? 'Processing Checkout...'
-                      : `${t.payNow} — ${formatLKR(finalPayableAmount)}`}
+              <div className="flex items-center justify-between border-t border-slate-100 pt-2">
+                <span className="font-sans font-semibold text-slate-800">
+                  Delivery Fee ({deliveryMethodLabel.split('(')[0].trim()})
+                </span>
+                {deliveryFeeAmount === 0 ? (
+                  <span className="rounded bg-emerald-100 px-2 py-0.5 font-sans text-xs font-extrabold text-emerald-800">
+                    FREE (Rs. 0)
                   </span>
-                </button>
+                ) : (
+                  <span className="font-extrabold text-[#F85606]">
+                    + {formatLKR(deliveryFeeAmount)}
+                  </span>
+                )}
+              </div>
 
-                <div className="flex items-center justify-center gap-2 pt-1 text-[11px] text-slate-500">
-                  <ShieldCheck className="h-4 w-4 text-emerald-600" />
-                  <span>
-                    100% BuyKit Buyer Protection · PayHere LKR Bank Settlement Ready
+              <div className="flex items-center justify-between border-t border-slate-100 pt-2 text-[11px] text-slate-600">
+                <span className="font-sans">Selected Payment:</span>
+                <span className="font-sans font-bold text-slate-900">{paymentMethodLabel}</span>
+              </div>
+
+              {/* FINAL TOTAL PAYABLE BLOCK */}
+              <div className="mt-3 rounded-xl border border-orange-200 bg-gradient-to-r from-[#FFF5F0] to-orange-50 p-4">
+                <div className="flex items-baseline justify-between">
+                  <div>
+                    <span className="block font-sans text-xs font-extrabold tracking-wide text-slate-900 uppercase">
+                      {t.totalAmountToPay}
+                    </span>
+                    <span className="font-sans text-[11px] font-semibold text-emerald-700">
+                      {t.youSave}: {formatLKR(totalCombinedSavings)}
+                    </span>
+                  </div>
+                  <span className="text-2xl font-extrabold text-[#F85606] sm:text-3xl">
+                    {formatLKR(finalPayableAmount)}
                   </span>
                 </div>
+              </div>
+            </div>
+
+            {/* Final Confirm & Pay Action */}
+            <div className="mt-5 space-y-2.5">
+              {!currentUser && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                  <div className="flex items-center gap-1.5 font-bold">
+                    <Lock className="h-3.5 w-3.5 text-[#F85606]" />
+                    <span>Sign in with Google to Confirm &amp; Track Your Order</span>
+                  </div>
+                  <p className="mt-0.5 text-[11px] text-amber-800">
+                    Clicking Confirm &amp; Pay below will let you sign in and immediately confirm this order.
+                  </p>
+                </div>
+              )}
+
+              <button
+                type="button"
+                disabled={checkoutSubmitting || creatingIntent}
+                onClick={handleTriggerCheckoutOrder}
+                className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[#F85606] px-6 py-4 text-base font-extrabold text-white shadow-lg transition-all hover:bg-[#d94800] disabled:opacity-50"
+              >
+                <Bolt className="h-5 w-5" />
+                <span>
+                  {creatingIntent
+                    ? 'Processing Payment...'
+                    : checkoutSubmitting
+                    ? 'Confirming Order...'
+                    : `Confirm & ${t.payNow} — ${formatLKR(finalPayableAmount)}`}
+                </span>
+              </button>
+
+              <div className="flex items-center justify-center gap-2 pt-1 text-[11px] text-slate-500">
+                <ShieldCheck className="h-4 w-4 text-emerald-600" />
+                <span>
+                  100% BuyKit Buyer Protection · Verified Sri Lanka LKR Checkout
+                </span>
               </div>
             </div>
           </div>
@@ -1413,13 +1502,12 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
       )}
 
       {/* =========================================================
-          STICKY BOTTOM CHECKOUT BAR (Always visible while scrolling Checkout page,
-          showing Final Total Price & Checkout / Pay Now Button)
+          STICKY BOTTOM PAY NOW BAR FOR STEP 1 ONLY
+          (Clicking "Pay Now" triggers orange loading bar -> opens Step 2 Read-Only Review & Summary)
          ========================================================= */}
-      {items.length > 0 && (
-        <div className="fixed right-0 bottom-[62px] left-0 z-[45] border-t-2 border-orange-300 bg-white/98 px-3 py-2.5 shadow-[0_-8px_24px_rgba(15,23,42,0.16)] backdrop-blur-md sm:px-8 sm:py-3">
-          <div className="mx-auto flex max-w-6xl items-center justify-between gap-2.5">
-            {/* Left: Total Price + Coupon Status */}
+      {items.length > 0 && checkoutStep === 'setup' && (
+        <div className="fixed right-0 bottom-[62px] left-0 z-[45] border-t-2 border-orange-300 bg-white/98 px-3 py-2.5 shadow-[0_-8px_24px_rgba(15,23,42,0.14)] backdrop-blur-md sm:px-8 sm:py-3">
+          <div className="mx-auto flex max-w-3xl items-center justify-between gap-2.5">
             <div className="min-w-0 flex-1">
               <div className="font-mono leading-tight tabular-nums">
                 <div className="flex flex-wrap items-center gap-1.5">
@@ -1432,16 +1520,10 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
                     </span>
                   )}
                 </div>
-
                 <div className="mt-0.5 flex items-baseline gap-2">
                   <span className="text-base font-extrabold text-[#F85606] sm:text-xl">
                     {formatLKR(finalPayableAmount)}
                   </span>
-                  {itemsOriginalTotal > finalPayableAmount && (
-                    <span className="hidden text-xs text-slate-400 line-through sm:inline">
-                      {formatLKR(itemsOriginalTotal)}
-                    </span>
-                  )}
                   {totalCombinedSavings > 0 && (
                     <span className="hidden rounded bg-[#FFF3EB] px-1.5 py-0.5 font-sans text-[10px] font-extrabold text-[#F85606] sm:inline-block">
                       {t.youSave} {formatLKR(totalCombinedSavings)}
@@ -1451,29 +1533,18 @@ export const DarazAliCheckoutView: React.FC<DarazAliCheckoutViewProps> = ({
               </div>
             </div>
 
-            {/* Right: Selected Payment Badge + Sticky Checkout / Pay Now Button */}
-            <div className="flex shrink-0 items-center gap-2 sm:gap-3">
-              <div className="hidden text-right text-[11px] leading-tight md:block">
-                <span className="block font-semibold text-slate-400">{t.selectPaymentMethod}</span>
-                <span className="font-bold text-slate-800">{paymentMethodLabel}</span>
-              </div>
-
-              <button
-                type="button"
-                disabled={checkoutSubmitting || creatingIntent}
-                onClick={handleTriggerCheckoutOrder}
-                className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-xl bg-[#F85606] px-4 py-2.5 text-xs font-extrabold text-white shadow-md transition-all hover:bg-[#d94800] disabled:opacity-50 sm:px-6 sm:py-3 sm:text-sm whitespace-nowrap"
-              >
-                <Bolt className="h-4 w-4 shrink-0" />
-                <span>
-                  {creatingIntent
-                    ? 'Processing...'
-                    : checkoutSubmitting
-                    ? 'Processing...'
-                    : `${t.payNow} · ${formatLKR(finalPayableAmount)}`}
-                </span>
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={handleGoToReviewStep}
+              className={`inline-flex shrink-0 items-center justify-center gap-1.5 rounded-xl px-6 py-3 text-xs font-extrabold shadow-md transition-all sm:px-8 sm:text-sm whitespace-nowrap ${
+                selectedPaymentOption
+                  ? 'bg-[#F85606] text-white hover:bg-[#d94800] active:scale-[0.98]'
+                  : 'bg-slate-300 text-slate-600 hover:bg-slate-300'
+              }`}
+            >
+              <Bolt className="h-4 w-4 shrink-0" />
+              <span>{t.payNow}</span>
+            </button>
           </div>
         </div>
       )}

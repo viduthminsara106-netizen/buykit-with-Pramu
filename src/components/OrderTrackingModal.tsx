@@ -14,8 +14,13 @@ import {
   Navigation,
   Box,
   AlertCircle,
+  FileDown,
 } from 'lucide-react';
 import { formatLKR } from '../data/catalog';
+import {
+  downloadOrderInvoicePdf,
+  InvoiceFallbackCustomerInfo,
+} from '../utils/invoicePdfGenerator';
 
 export type OrderStatusValue =
   | 'processing'
@@ -27,6 +32,14 @@ export type OrderStatusValue =
   | 'cancelled';
 
 export type OrderTrackingStageKey = 'preparing' | 'dispatched' | 'in_transit' | 'delivered';
+
+export interface OrderInvoiceLineItem {
+  title: string;
+  quantity: number;
+  unitPrice: number;
+  originalPrice?: number;
+  category?: string;
+}
 
 export interface TrackableOrder {
   id: string;
@@ -40,6 +53,16 @@ export interface TrackableOrder {
   status: OrderStatusValue;
   createdAtMs?: number;
   isDemoOrder?: boolean;
+  invoiceItems?: OrderInvoiceLineItem[];
+  couponCode?: string;
+  couponDiscount?: number;
+  deliveryFee?: number;
+  deliveryMethodLabel?: string;
+  paymentMethodLabel?: string;
+  customerName?: string;
+  customerEmail?: string;
+  customerPhone?: string;
+  shippingAddress?: string;
 }
 
 interface TimelineStageDefinition {
@@ -144,6 +167,7 @@ interface OrderTrackingModalProps {
     nextStage: OrderTrackingStageKey
   ) => Promise<void>;
   onCancelOrder?: (order: TrackableOrder) => Promise<void>;
+  fallbackCustomerInfo?: InvoiceFallbackCustomerInfo;
 }
 
 export const OrderTrackingModal: React.FC<OrderTrackingModalProps> = ({
@@ -152,10 +176,12 @@ export const OrderTrackingModal: React.FC<OrderTrackingModalProps> = ({
   onClose,
   onUpdateOrderStage,
   onCancelOrder,
+  fallbackCustomerInfo,
 }) => {
   const [selectedStageIndex, setSelectedStageIndex] = useState<number>(0);
   const [updatingStage, setUpdatingStage] = useState<boolean>(false);
   const [copiedTracking, setCopiedTracking] = useState<boolean>(false);
+  const [invoiceDownloaded, setInvoiceDownloaded] = useState<boolean>(false);
 
   useEffect(() => {
     if (!order) return;
@@ -166,7 +192,11 @@ export const OrderTrackingModal: React.FC<OrderTrackingModalProps> = ({
   if (!isOpen || !order) return null;
 
   const isCancelled = order.status === 'cancelled';
-  const persistedStageIdx = mapOrderStatusToStageIndex(order.status);
+  const canManageStage =
+    Boolean(onUpdateOrderStage) &&
+    !isCancelled &&
+    !order.isDemoOrder &&
+    order.status !== 'delivered';
   const activeStageIdx = isCancelled ? -1 : selectedStageIndex;
   const activeStage =
     activeStageIdx >= 0
@@ -197,24 +227,28 @@ export const OrderTrackingModal: React.FC<OrderTrackingModalProps> = ({
     window.setTimeout(() => setCopiedTracking(false), 2000);
   };
 
-  const handleSelectOrPersistStage = async (stageIndex: number) => {
-    setSelectedStageIndex(stageIndex);
-    const targetStage = ORDER_TRACKING_STAGES[stageIndex];
-    if (!targetStage || !onUpdateOrderStage || isCancelled) return;
+  const handleDownloadInvoice = () => {
+    downloadOrderInvoicePdf(order, fallbackCustomerInfo);
+    setInvoiceDownloaded(true);
+    window.setTimeout(() => setInvoiceDownloaded(false), 2200);
+  };
 
-    // Only write to Firestore if not a demo order and not locked in terminal state
-    if (!order.isDemoOrder && order.status !== 'delivered') {
-      setUpdatingStage(true);
-      try {
-        await onUpdateOrderStage(order, targetStage.key);
-      } finally {
-        setUpdatingStage(false);
-      }
+  const handleSelectOrPersistStage = async (stageIndex: number) => {
+    if (!canManageStage || !onUpdateOrderStage) return;
+    const targetStage = ORDER_TRACKING_STAGES[stageIndex];
+    if (!targetStage) return;
+
+    setSelectedStageIndex(stageIndex);
+    setUpdatingStage(true);
+    try {
+      await onUpdateOrderStage(order, targetStage.key);
+    } finally {
+      setUpdatingStage(false);
     }
   };
 
   const handleAdvanceNextStage = async () => {
-    if (isCancelled) return;
+    if (!canManageStage) return;
     const nextIdx = Math.min(ORDER_TRACKING_STAGES.length - 1, selectedStageIndex + 1);
     await handleSelectOrPersistStage(nextIdx);
   };
@@ -375,18 +409,24 @@ export const OrderTrackingModal: React.FC<OrderTrackingModalProps> = ({
                       <button
                         key={stage.key}
                         type="button"
-                        disabled={isCancelled || updatingStage}
-                        onClick={() => handleSelectOrPersistStage(idx)}
+                        disabled={!canManageStage || updatingStage}
+                        onClick={() => {
+                          if (canManageStage) {
+                            void handleSelectOrPersistStage(idx);
+                          }
+                        }}
                         className={`group flex flex-col items-center rounded-xl border p-2.5 text-center transition-all ${
+                          canManageStage ? 'cursor-pointer' : 'cursor-default'
+                        } ${
                           isCurrent
                             ? 'border-[#F85606] bg-[#F85606]/20 text-white shadow-xs'
                             : isCompleted
-                            ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20'
-                            : 'border-white/10 bg-white/5 text-slate-400 hover:border-white/25 hover:text-slate-200'
+                            ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
+                            : 'border-white/10 bg-white/5 text-slate-400'
                         }`}
                       >
                         <div
-                          className={`mb-1.5 flex h-8 w-8 items-center justify-center rounded-lg transition-transform group-hover:scale-105 ${
+                          className={`mb-1.5 flex h-8 w-8 items-center justify-center rounded-lg ${
                             isCurrent
                               ? 'bg-[#F85606] text-white'
                               : isCompleted
@@ -412,11 +452,11 @@ export const OrderTrackingModal: React.FC<OrderTrackingModalProps> = ({
                 </div>
               </div>
 
-              {/* Interactive Stage Controls Bar */}
-              {!isCancelled && (
+              {/* Admin-Only Stage Controls Bar (Hidden for regular shoppers) */}
+              {canManageStage && (
                 <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-white/10 pt-3.5 text-xs">
                   <span className="text-slate-300">
-                    Click any stage above to inspect or simulate live shipment progress:
+                    Admin Control: Update live shipment stage for this customer order:
                   </span>
                   <div className="flex items-center gap-2">
                     {selectedStageIndex < ORDER_TRACKING_STAGES.length - 1 ? (
@@ -481,10 +521,12 @@ export const OrderTrackingModal: React.FC<OrderTrackingModalProps> = ({
                     <div
                       key={stage.key}
                       onClick={() => {
-                        if (!isCancelled) handleSelectOrPersistStage(idx);
+                        if (canManageStage) {
+                          void handleSelectOrPersistStage(idx);
+                        }
                       }}
                       className={`group relative flex gap-4 pb-7 ${
-                        !isCancelled ? 'cursor-pointer' : ''
+                        canManageStage ? 'cursor-pointer' : ''
                       } ${isLast ? 'pb-0' : ''}`}
                     >
                       {/* Vertical Timeline Connector Line */}
@@ -649,13 +691,33 @@ export const OrderTrackingModal: React.FC<OrderTrackingModalProps> = ({
               </span>
             </div>
 
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded-xl bg-slate-900 px-5 py-2 text-xs font-bold text-white transition-colors hover:bg-slate-800"
-            >
-              Done
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={handleDownloadInvoice}
+                className="inline-flex items-center gap-1.5 rounded-xl border border-orange-200 bg-[#FFF3EB] px-4 py-2 text-xs font-extrabold text-[#F85606] transition-colors hover:bg-[#F85606] hover:text-white"
+              >
+                {invoiceDownloaded ? (
+                  <>
+                    <Check className="h-3.5 w-3.5" />
+                    <span>Invoice Downloaded</span>
+                  </>
+                ) : (
+                  <>
+                    <FileDown className="h-3.5 w-3.5" />
+                    <span>Download Invoice</span>
+                  </>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={onClose}
+                className="rounded-xl bg-slate-900 px-5 py-2 text-xs font-bold text-white transition-colors hover:bg-slate-800"
+              >
+                Done
+              </button>
+            </div>
           </div>
         </motion.div>
       </motion.div>

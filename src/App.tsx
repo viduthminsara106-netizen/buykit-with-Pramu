@@ -154,6 +154,7 @@ import {
 } from './utils/assetResolver';
 import { PWAInstallButton, OfflineIndicator } from './components/PWAInstallButton';
 import { MobileQrScanPayPage } from './components/MobileQrScanPayPage';
+import { saveOrderInvoiceMetadata } from './utils/invoicePdfGenerator';
 
 export const BUYKIT_LOGO_ASSET = resolveAssetUrl(
   '/assets/aistudio/Screenshot_20261107_191852_81defece.jpg'
@@ -698,6 +699,7 @@ function StorefrontApp() {
   const [selectedCartItemIds, setSelectedCartItemIds] = useState<string[]>([]);
   const knownCartItemIdsRef = useRef<Set<string>>(new Set());
   const [checkoutSource, setCheckoutSource] = useState<'cart' | 'buy_now'>('cart');
+  const [checkoutSessionKey, setCheckoutSessionKey] = useState<number>(0);
   const [buyNowItem, setBuyNowItem] = useState<FirestoreCartItem | null>(null);
   const [addedToCartPopup, setAddedToCartPopup] = useState<{
     title: string;
@@ -2048,13 +2050,16 @@ function StorefrontApp() {
       imageUrl: product.imageUrl,
     };
 
-    // Direct Buy Now -> Jump straight to the separate Checkout Page with this item
+    // Direct Buy Now -> Run orange loading bar & jump to Checkout Step 1 with this item
     if (goToCheckoutAfter) {
       setBuyNowItem(lineItemPayload);
       setCheckoutSource('buy_now');
       setSelectedProduct(null);
-      setActiveBottomTab('checkout');
-      window.scrollTo({ top: 0, behavior: 'smooth' });
+      triggerOrangeSearchLoading(() => {
+        setCheckoutSessionKey((k) => k + 1);
+        setActiveBottomTab('checkout');
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      });
       return;
     }
 
@@ -2350,9 +2355,42 @@ function StorefrontApp() {
     const cleanTotalAmount = Math.max(1, Math.round(summary.finalPayableAmount));
     const cleanHubName = selectedHubName.slice(0, VALIDATION_LIMITS.MAX_HUB_NAME);
     const cleanSummary = summaryText || 'BuyKit Marketplace Order';
+    const invoiceLineItems = activeCheckoutItems.map((item) => ({
+      title: item.title,
+      quantity: item.quantity,
+      unitPrice: item.price,
+      originalPrice: item.originalPrice,
+      category: item.category,
+    }));
+    const invoiceItemsSubtotal = activeCheckoutItems.reduce(
+      (acc, item) => acc + item.price * item.quantity,
+      0
+    );
+    const createdTimestampMs = Date.now();
+    const formattedFullAddress = `${cleanAddress}${cityDistrict ? `, ${cityDistrict}` : ''} (${cleanPostal})`;
 
     // If guest user clicks Place Order, create a live demo order and remove ONLY checked-out items
     if (!currentUser) {
+      const guestName = fullName.trim() || 'Guest Shopper';
+      const guestEmail = userEmail.trim() || 'guest@buykit.lk';
+      saveOrderInvoiceMetadata({
+        orderId,
+        orderNumber: orderCode,
+        items: invoiceLineItems,
+        subtotal: invoiceItemsSubtotal,
+        couponCode: summary.couponCode || 'NO_COUPON',
+        couponDiscount: Math.max(0, Math.round(summary.couponDiscount || 0)),
+        deliveryFee: Math.max(0, Math.round(summary.deliveryFee || 0)),
+        deliveryMethodLabel: summary.deliveryMethodLabel,
+        paymentMethodLabel: summary.paymentMethodLabel,
+        customerName: guestName,
+        customerEmail: guestEmail,
+        customerPhone: cleanPhone,
+        shippingAddress: formattedFullAddress,
+        finalTotalLkr: cleanTotalAmount,
+        createdAtMs: createdTimestampMs,
+      });
+
       const guestOrder: TrackableOrder = {
         id: orderId,
         userId: 'guest_shopper',
@@ -2363,8 +2401,18 @@ function StorefrontApp() {
         paymentMethod,
         pickupHubName: cleanHubName,
         status: 'preparing',
-        createdAtMs: Date.now(),
+        createdAtMs: createdTimestampMs,
         isDemoOrder: true,
+        invoiceItems: invoiceLineItems,
+        couponCode: summary.couponCode,
+        couponDiscount: summary.couponDiscount,
+        deliveryFee: summary.deliveryFee,
+        deliveryMethodLabel: summary.deliveryMethodLabel,
+        paymentMethodLabel: summary.paymentMethodLabel,
+        customerName: guestName,
+        customerEmail: guestEmail,
+        customerPhone: cleanPhone,
+        shippingAddress: formattedFullAddress,
       };
       if (checkoutSource === 'buy_now') {
         setBuyNowItem(null);
@@ -2544,6 +2592,24 @@ function StorefrontApp() {
         setSelectedCartItemIds((prev) => prev.filter((id) => !checkedOutIdSet.has(id)));
       }
 
+      saveOrderInvoiceMetadata({
+        orderId,
+        orderNumber: orderCode,
+        items: invoiceLineItems,
+        subtotal: invoiceItemsSubtotal,
+        couponCode: summary.couponCode || 'NO_COUPON',
+        couponDiscount: Math.max(0, Math.round(summary.couponDiscount || 0)),
+        deliveryFee: Math.max(0, Math.round(summary.deliveryFee || 0)),
+        deliveryMethodLabel: summary.deliveryMethodLabel,
+        paymentMethodLabel: cleanPaymentLabel,
+        customerName: customerNameToSave,
+        customerEmail: emailToSave,
+        customerPhone: cleanPhone,
+        shippingAddress: fullShippingAddress,
+        finalTotalLkr: cleanTotalAmount,
+        createdAtMs: createdTimestampMs,
+      });
+
       const confirmedOrderObj: TrackableOrder = {
         id: orderId,
         userId: uid,
@@ -2554,7 +2620,17 @@ function StorefrontApp() {
         paymentMethod,
         pickupHubName: cleanHubName,
         status: 'preparing',
-        createdAtMs: Date.now(),
+        createdAtMs: createdTimestampMs,
+        invoiceItems: invoiceLineItems,
+        couponCode: summary.couponCode,
+        couponDiscount: summary.couponDiscount,
+        deliveryFee: summary.deliveryFee,
+        deliveryMethodLabel: summary.deliveryMethodLabel,
+        paymentMethodLabel: cleanPaymentLabel,
+        customerName: customerNameToSave,
+        customerEmail: emailToSave,
+        customerPhone: cleanPhone,
+        shippingAddress: fullShippingAddress,
       };
       setLastPlacedTrackableOrder(confirmedOrderObj);
 
@@ -2813,6 +2889,31 @@ function StorefrontApp() {
       status: 'in_transit',
       createdAtMs: Date.now() - 11 * 3600 * 1000,
       isDemoOrder: true,
+      invoiceItems: [
+        {
+          title: 'SonicFlow Titanium Studio ANC Wireless Headphones',
+          quantity: 1,
+          unitPrice: 15800,
+          category: 'Audio',
+        },
+        {
+          title: 'PowerCore 160W GaN Fast Charger',
+          quantity: 1,
+          unitPrice: 8500,
+          category: 'Chargers',
+        },
+      ],
+      couponCode: 'BUYKIT5000',
+      couponDiscount: 2900,
+      deliveryFee: 0,
+      deliveryMethodLabel: 'Free Islandwide Express Delivery',
+      paymentMethodLabel: 'Cash on Delivery (LKR)',
+      customerName: fullName.trim() || currentUser?.displayName || 'BuyKit Shopper',
+      customerEmail: userEmail || currentUser?.email || 'shopper@buykit.lk',
+      customerPhone: phone || '+94 77 123 4567',
+      shippingAddress: shippingAddress
+        ? `${shippingAddress}${cityDistrict ? `, ${cityDistrict}` : ''} (${postalCode})`
+        : selectedHubName,
     });
   };
 
@@ -3428,8 +3529,8 @@ function StorefrontApp() {
         )}
       </AnimatePresence>
 
-      {/* Top Navigation Bar with Official BuyKit Logo (Hidden on Search Page so Search Bar moves to top) */}
-      {activeBottomTab !== 'search' && (
+      {/* Top Navigation Bar with Official BuyKit Logo (Hidden on Search & Checkout Pages) */}
+      {activeBottomTab !== 'search' && activeBottomTab !== 'checkout' && (
         <header className="sticky top-0 z-40 flex items-center justify-between gap-2 border-b border-slate-200 bg-white px-3 py-2.5 shadow-2xs sm:gap-5 sm:px-6 lg:px-10">
           {/* Zone 1: Official BuyKit Logo + Wordmark */}
           <a
@@ -3557,6 +3658,8 @@ function StorefrontApp() {
         className={`mx-auto max-w-[1540px] ${
           activeBottomTab === 'search'
             ? 'px-0 pt-0 pb-4 sm:px-0'
+            : activeBottomTab === 'checkout'
+            ? 'px-3 pt-0 pb-4 sm:px-6 sm:pt-3 lg:px-8'
             : 'px-3 py-4 sm:px-6 lg:px-8'
         }`}
       >
@@ -4884,19 +4987,24 @@ function StorefrontApp() {
             onProceedToCheckout={() => {
               if (selectedCartItems.length === 0) return;
               setCheckoutSource('cart');
-              setActiveBottomTab('checkout');
-              window.scrollTo({ top: 0, behavior: 'smooth' });
+              triggerOrangeSearchLoading(() => {
+                setCheckoutSessionKey((k) => k + 1);
+                setActiveBottomTab('checkout');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              });
             }}
           />
         )}
 
         {/* =========================================================
-            SEPARATE CHECKOUT & PAYMENT PAGE
-            (Opened when clicking "Pay Now" from Cart or "Buy Now" on a Product:
-             Order Summary, Coupons, Shipping Address & Payment Options)
+            SEPARATE 2-STEP CHECKOUT & PAYMENT PAGE
+            (Step 1: Address, Applied Coupons & Payment Method ONLY;
+             Step 2: Locked Read-Only Products, Coupon, Address, Payment & Auto-Scrolled Summary)
            ========================================================= */}
         {activeBottomTab === 'checkout' && (
           <DarazAliCheckoutView
+            checkoutSessionKey={checkoutSessionKey}
+            onTriggerTopLoading={triggerOrangeSearchLoading}
             currentUser={currentUser}
             items={activeCheckoutItems}
             fullName={fullName}
@@ -5195,36 +5303,84 @@ function StorefrontApp() {
               transition={{ duration: 0.2 }}
               className="fixed inset-0 z-50 flex h-screen w-screen flex-col overflow-hidden bg-[#F4F3EF]"
             >
-              {/* 1. FULL-WIDTH TOP NAVIGATION & QUICK TABS BAR */}
-              <header className="shrink-0 border-b border-slate-200 bg-white px-4 py-2.5 shadow-2xs sm:px-6 lg:px-10">
-                <div className="mx-auto flex max-w-[1440px] flex-wrap items-center justify-between gap-3">
-                  {/* Left: Back to Storefront Button + Store Breadcrumb */}
-                  <div className="flex items-center gap-3">
-                    <button
-                      type="button"
-                      onClick={() => setSelectedProduct(null)}
-                      className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-extrabold text-slate-800 shadow-2xs transition-colors hover:border-[#F85606] hover:bg-[#FFF3EB] hover:text-[#F85606] sm:text-sm"
-                    >
-                      <ChevronLeft className="h-4 w-4" />
-                      <span>{t.backToShop}</span>
-                    </button>
+              {/* 1. COMPACT TOP NAVIGATION BAR (Back to Shop on Left + Compare, Wishlist, Close on Far Right) */}
+              <header className="shrink-0 border-b border-slate-200 bg-white px-3 py-2 shadow-2xs sm:px-6 lg:px-10">
+                <div className="mx-auto max-w-[1440px] space-y-2">
+                  {/* Single Compact Top Row: Back to Shop (Left) + Compare, Wishlist, Close (Far Right) */}
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex min-w-0 items-center gap-2.5">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedProduct(null)}
+                        className="inline-flex shrink-0 items-center gap-1 rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-extrabold text-slate-800 shadow-2xs transition-colors hover:border-[#F85606] hover:bg-[#FFF3EB] hover:text-[#F85606] sm:px-3 sm:text-sm"
+                      >
+                        <ChevronLeft className="h-4 w-4" />
+                        <span>{t.backToShop}</span>
+                      </button>
 
-                    <div className="hidden items-center gap-2 text-xs text-slate-600 md:flex">
-                      <span className="inline-flex items-center gap-1 rounded-md bg-slate-900 px-2.5 py-1 font-display text-[11px] font-extrabold tracking-wide text-white uppercase">
-                        <Store className="h-3 w-3 text-[#FFB800]" />
-                        <span>{selectedProduct.storeName}</span>
-                      </span>
-                      <span aria-hidden="true">·</span>
-                      <span className="font-semibold text-slate-700">{selectedProduct.category}</span>
-                      <span aria-hidden="true">·</span>
-                      <span className="rounded-md bg-[#FFF3EB] px-2.5 py-0.5 font-bold text-[#F85606]">
-                        {selectedProduct.dealLabel}
-                      </span>
+                      <div className="hidden items-center gap-2 text-xs text-slate-600 lg:flex">
+                        <span className="inline-flex items-center gap-1 rounded-md bg-slate-900 px-2 py-0.5 font-display text-[11px] font-extrabold tracking-wide text-white uppercase">
+                          <Store className="h-3 w-3 text-[#FFB800]" />
+                          <span>{selectedProduct.storeName}</span>
+                        </span>
+                        <span aria-hidden="true">·</span>
+                        <span className="font-semibold text-slate-700">{selectedProduct.category}</span>
+                      </div>
+                    </div>
+
+                    {/* Far Right: Compare, Wishlist & Close inline with Back to Shop */}
+                    <div className="ml-auto flex shrink-0 items-center gap-1.5 sm:gap-2">
+                      <button
+                        type="button"
+                        onClick={(e) => handleToggleCompare(selectedProduct, e)}
+                        title={isProductCompared(selectedProduct.id) ? 'Comparing' : 'Compare'}
+                        className={`inline-flex items-center gap-1 rounded-xl border px-2.5 py-1.5 text-xs font-bold transition-colors ${
+                          isProductCompared(selectedProduct.id)
+                            ? 'border-[#F85606] bg-[#F85606] text-white'
+                            : 'border-slate-200 bg-slate-50 text-slate-700 hover:border-orange-300 hover:text-[#F85606]'
+                        }`}
+                      >
+                        <Scale className="h-3.5 w-3.5" />
+                        <span className="hidden sm:inline">
+                          {isProductCompared(selectedProduct.id) ? 'Comparing' : 'Compare'}
+                        </span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={(e) => handleToggleWishlist(selectedProduct, e)}
+                        title={isProductWishlisted(selectedProduct.id) ? 'Saved' : 'Wishlist'}
+                        className={`inline-flex items-center gap-1 rounded-xl border px-2.5 py-1.5 text-xs font-bold transition-colors ${
+                          isProductWishlisted(selectedProduct.id)
+                            ? 'border-rose-200 bg-rose-50 text-rose-600 hover:bg-rose-100'
+                            : 'border-slate-200 bg-slate-50 text-slate-700 hover:border-rose-200 hover:text-rose-500'
+                        }`}
+                      >
+                        <Heart
+                          className={`h-3.5 w-3.5 ${
+                            isProductWishlisted(selectedProduct.id)
+                              ? 'fill-rose-500 text-rose-500'
+                              : ''
+                          }`}
+                        />
+                        <span className="hidden sm:inline">
+                          {isProductWishlisted(selectedProduct.id) ? 'Saved' : 'Wishlist'}
+                        </span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setSelectedProduct(null)}
+                        className="rounded-xl bg-slate-100 p-1.5 text-slate-600 transition-colors hover:bg-slate-200 hover:text-slate-950"
+                        aria-label="Close product view"
+                      >
+                        <X className="h-4 w-4 sm:h-5 sm:w-5" />
+                      </button>
                     </div>
                   </div>
 
-                  {/* Center: User-Friendly Section Tabs */}
-                  <div className="flex items-center gap-1.5 overflow-x-auto">
+                  {/* Slim Scrollable Section Tabs */}
+                  <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
                     {(
                       [
                         { id: 'all', label: t.fullProductView },
@@ -5250,7 +5406,7 @@ function StorefrontApp() {
                           key={tab.id}
                           type="button"
                           onClick={() => setQuickViewTab(tab.id)}
-                          className={`shrink-0 rounded-xl px-3.5 py-1.5 text-xs font-extrabold transition-all ${
+                          className={`shrink-0 rounded-lg px-3 py-1 text-[11px] font-extrabold transition-all sm:text-xs ${
                             active
                               ? 'bg-[#F85606] text-white shadow-2xs'
                               : 'bg-slate-100 text-slate-700 hover:bg-orange-50 hover:text-[#F85606]'
@@ -5260,55 +5416,6 @@ function StorefrontApp() {
                         </button>
                       );
                     })}
-                  </div>
-
-                  {/* Right: Compare, Wishlist & Close (Admin manages products inside Admin Dashboard only) */}
-                  <div className="flex items-center gap-2">
-
-                    <button
-                      type="button"
-                      onClick={(e) => handleToggleCompare(selectedProduct, e)}
-                      className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-bold transition-colors ${
-                        isProductCompared(selectedProduct.id)
-                          ? 'border-[#F85606] bg-[#F85606] text-white'
-                          : 'border-slate-200 bg-slate-50 text-slate-700 hover:border-orange-300 hover:text-[#F85606]'
-                      }`}
-                    >
-                      <Scale className="h-3.5 w-3.5" />
-                      <span className="hidden sm:inline">
-                        {isProductCompared(selectedProduct.id) ? 'Comparing' : 'Compare'}
-                      </span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={(e) => handleToggleWishlist(selectedProduct, e)}
-                      className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-bold transition-colors ${
-                        isProductWishlisted(selectedProduct.id)
-                          ? 'border-rose-200 bg-rose-50 text-rose-600 hover:bg-rose-100'
-                          : 'border-slate-200 bg-slate-50 text-slate-700 hover:border-rose-200 hover:text-rose-500'
-                      }`}
-                    >
-                      <Heart
-                        className={`h-3.5 w-3.5 ${
-                          isProductWishlisted(selectedProduct.id)
-                            ? 'fill-rose-500 text-rose-500'
-                            : ''
-                        }`}
-                      />
-                      <span className="hidden sm:inline">
-                        {isProductWishlisted(selectedProduct.id) ? 'Saved' : 'Wishlist'}
-                      </span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setSelectedProduct(null)}
-                      className="rounded-xl bg-slate-100 p-2 text-slate-600 transition-colors hover:bg-slate-200 hover:text-slate-950"
-                      aria-label="Close product view"
-                    >
-                      <X className="h-5 w-5" />
-                    </button>
                   </div>
                 </div>
               </header>
@@ -5927,7 +6034,6 @@ function StorefrontApp() {
                         onClick={() => {
                           const prod = selectedProduct;
                           const q = detailQuantity;
-                          setSelectedProduct(null);
                           handleAddToCart(prod, q, undefined, false);
                         }}
                         className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-[#FFB800] px-6 py-3 text-xs font-extrabold text-slate-950 shadow-xs transition-colors hover:bg-[#e5a600] sm:px-8 sm:text-sm"
@@ -5997,13 +6103,23 @@ function StorefrontApp() {
         }}
       />
 
-      {/* Order Tracking Modal (Shoppers view progress; only Admin can update order status) */}
+      {/* Order Tracking Modal (Shoppers view progress & download PDF invoice; only Admin can update order status) */}
       <OrderTrackingModal
         isOpen={Boolean(trackingOrder)}
         order={trackingOrder}
         onClose={() => setTrackingOrder(null)}
         onUpdateOrderStage={isCurrentUserAdmin ? handleUpdateOrderTrackingStage : undefined}
         onCancelOrder={handleCancelOrder}
+        fallbackCustomerInfo={{
+          customerName: fullName.trim() || currentUser?.displayName || undefined,
+          customerEmail: userEmail || currentUser?.email || undefined,
+          customerPhone: phone || undefined,
+          shippingAddress: shippingAddress
+            ? `${shippingAddress}${cityDistrict ? `, ${cityDistrict}` : ''}${
+                postalCode ? ` (${postalCode})` : ''
+              }`
+            : selectedHubName,
+        }}
       />
 
       {/* Floating Comparison Bar (Shows when 1–3 products are added to Compare) */}
