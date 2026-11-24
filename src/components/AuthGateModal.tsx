@@ -15,7 +15,9 @@ import {
   AlertTriangle,
   Copy,
   RefreshCw,
+  ExternalLink,
 } from 'lucide-react';
+import firebaseConfig from '../../firebase-applet-config.json';
 import {
   signInWithGoogleAccount,
   getFriendlyAuthError,
@@ -34,6 +36,7 @@ interface AuthGateModalProps {
   isOpen: boolean;
   onClose: () => void;
   pendingProductName?: string | null;
+  logoBadge?: React.ReactNode;
   onSuccess: (user: User, extras?: AuthRegistrationExtras) => void;
 }
 
@@ -69,6 +72,7 @@ export const AuthGateModal: React.FC<AuthGateModalProps> = ({
   isOpen,
   onClose,
   pendingProductName,
+  logoBadge,
   onSuccess,
 }) => {
   const prefersReducedMotion = useReducedMotion();
@@ -219,19 +223,25 @@ export const AuthGateModal: React.FC<AuthGateModalProps> = ({
                 </>
               )}
 
-              {/* Top Row: Brand Mark + Close Button */}
+              {/* Top Row: Official BuyKit Logo + Wordmark + Close Button */}
               <div className="relative z-10 flex items-start justify-between gap-3">
                 <div className="flex items-center gap-3">
                   <motion.div
-                    initial={prefersReducedMotion ? false : { rotate: -10, scale: 0.85 }}
+                    initial={prefersReducedMotion ? false : { rotate: -8, scale: 0.85 }}
                     animate={{ rotate: 0, scale: 1 }}
                     transition={{ type: 'spring', stiffness: 420, damping: 22 }}
-                    className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border border-white/30 bg-white/15 shadow-sm backdrop-blur-xs"
+                    className="relative shrink-0 rounded-2xl p-0.5 ring-2 ring-white/45 shadow-md"
                   >
-                    {pendingProductName ? (
-                      <Lock className="h-5 w-5 text-white" />
+                    {logoBadge ? (
+                      logoBadge
                     ) : (
-                      <ShoppingBag className="h-5 w-5 text-white" />
+                      <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white/15 backdrop-blur-xs">
+                        {pendingProductName ? (
+                          <Lock className="h-5 w-5 text-white" />
+                        ) : (
+                          <ShoppingBag className="h-5 w-5 text-white" />
+                        )}
+                      </div>
                     )}
                   </motion.div>
                   <div>
@@ -609,29 +619,41 @@ export const AuthGateModal: React.FC<AuthGateModalProps> = ({
                             </p>
 
                             {authError.unauthorizedHostname && (
-                              <div className="mt-2 flex items-center gap-1.5">
-                                <code className="flex-1 truncate rounded-md border border-red-200 bg-white px-2 py-1 font-mono text-[11px] text-slate-800">
-                                  {authError.unauthorizedHostname}
-                                </code>
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    handleCopyHostname(authError.unauthorizedHostname!)
-                                  }
-                                  className="inline-flex shrink-0 items-center gap-1 rounded-md border border-red-200 bg-white px-2 py-1 text-[11px] font-bold text-red-700 hover:bg-red-100"
+                              <div className="mt-2.5 space-y-2">
+                                <div className="flex items-center gap-1.5">
+                                  <code className="flex-1 truncate rounded-md border border-red-200 bg-white px-2 py-1 font-mono text-[11px] text-slate-800">
+                                    {authError.unauthorizedHostname}
+                                  </code>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      handleCopyHostname(authError.unauthorizedHostname!)
+                                    }
+                                    className="inline-flex shrink-0 items-center gap-1 rounded-md border border-red-200 bg-white px-2 py-1 text-[11px] font-bold text-red-700 hover:bg-red-100"
+                                  >
+                                    {copiedDomain ? (
+                                      <>
+                                        <Check className="h-3 w-3 text-emerald-600" />
+                                        <span className="text-emerald-700">Copied</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Copy className="h-3 w-3" />
+                                        <span>Copy</span>
+                                      </>
+                                    )}
+                                  </button>
+                                </div>
+
+                                <a
+                                  href={`https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication/settings`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-[#F85606] px-3 py-2 text-[11px] font-bold text-white transition-colors hover:bg-[#d94800]"
                                 >
-                                  {copiedDomain ? (
-                                    <>
-                                      <Check className="h-3 w-3 text-emerald-600" />
-                                      <span className="text-emerald-700">Copied</span>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <Copy className="h-3 w-3" />
-                                      <span>Copy</span>
-                                    </>
-                                  )}
-                                </button>
+                                  <ExternalLink className="h-3.5 w-3.5" />
+                                  <span>Open Firebase Authorized Domains Settings</span>
+                                </a>
                               </div>
                             )}
 

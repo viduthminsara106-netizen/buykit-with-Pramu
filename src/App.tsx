@@ -6661,6 +6661,7 @@ function StorefrontApp() {
         pendingProductName={
           pendingCartProduct?.title || pendingWishlistProduct?.title || null
         }
+        logoBadge={<BuyKitLogoBadge size="lg" />}
         onSuccess={(loggedInUser, extras) => {
           if (extras?.fullName) {
             setFullName(extras.fullName);
