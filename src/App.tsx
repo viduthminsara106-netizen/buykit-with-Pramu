@@ -49,6 +49,8 @@ import {
   Settings,
   Edit3,
   Check,
+  Bell,
+  Share2,
 } from 'lucide-react';
 import {
   auth,
@@ -77,6 +79,11 @@ import {
   AdminNotificationType,
   AdminOrderRecord,
   emitAdminNotificationToFirestore,
+  UserNotificationRecord,
+  UserNotificationCategory,
+  UserNotificationEventType,
+  UserNotificationActionType,
+  emitUserNotificationToFirestore,
   ensureUserProfileDocument,
   User,
 } from './firebase';
@@ -112,6 +119,11 @@ import {
   MAX_COMPARE_PRODUCTS,
 } from './components/ProductComparisonModal';
 import { ProductImageGallery } from './components/ProductImageGallery';
+import {
+  ProductShareModal,
+  buildProductShareUrl,
+} from './components/ProductShareModal';
+import { DarazAliNotificationCenter } from './components/DarazAliNotificationCenter';
 import {
   AccountSettingsModal,
   COUNTRIES_WITH_FLAGS,
@@ -155,6 +167,14 @@ import {
 import { PWAInstallButton, OfflineIndicator } from './components/PWAInstallButton';
 import { MobileQrScanPayPage } from './components/MobileQrScanPayPage';
 import { saveOrderInvoiceMetadata } from './utils/invoicePdfGenerator';
+import {
+  DEFAULT_CARRIER_NAME,
+  DEFAULT_CARRIER_PREFIX,
+  generateRealTrackingNumber,
+  resolveOrderTrackingNumber,
+  saveRealTrackingRecord,
+  updateRealTrackingStatus,
+} from './utils/trackingSystem';
 
 export const BUYKIT_LOGO_ASSET = resolveAssetUrl(
   '/assets/aistudio/Screenshot_20261107_191852_81defece.jpg'
@@ -775,6 +795,83 @@ function StorefrontApp() {
   const [toastBanner, setToastBanner] = useState<string | null>(null);
   const [isLowConnectionMode] = useState<boolean>(() => detectSlowConnection());
 
+  // Product Share Modal & Deep-Link State
+  const [shareProduct, setShareProduct] = useState<MarketplaceProduct | null>(null);
+  const deepLinkOpenedRef = useRef<boolean>(false);
+
+  // 100% Daraz / AliExpress Customer Notification Center State (Firestore + Local Guest Sync)
+  const [isNotificationCenterOpen, setIsNotificationCenterOpen] = useState<boolean>(false);
+  const [firestoreUserNotifications, setFirestoreUserNotifications] = useState<
+    UserNotificationRecord[]
+  >([]);
+  const [localUserNotifications, setLocalUserNotifications] = useState<UserNotificationRecord[]>(
+    () => {
+      try {
+        const raw = window.localStorage.getItem('buykit_user_notifications_v1');
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            return parsed;
+          }
+        }
+      } catch {
+        // ignore storage errors
+      }
+      return [
+        {
+          id: 'welcome_buykit_starter',
+          notificationId: 'welcome_buykit_starter',
+          userId: 'guest_shopper',
+          category: 'promos',
+          eventType: 'welcome',
+          title: 'Welcome to BuyKit with Pramu — Rs. 5,000 Starter Voucher Ready!',
+          message:
+            'Unlock exclusive Sri Lanka Flash Sale deals, Free Delivery hubs, and instant LKR savings on your first order.',
+          actionType: 'open_deals',
+          relatedId: 'deals',
+          trackingNumber: '',
+          imageUrl: '',
+          read: false,
+          createdAtMs: Date.now(),
+          isLocalOnly: true,
+        },
+      ];
+    }
+  );
+  const seenNotifIdsRef = useRef<Set<string>>(new Set());
+  const initialNotifLoadDoneRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        'buykit_user_notifications_v1',
+        JSON.stringify(localUserNotifications.slice(0, 60))
+      );
+    } catch {
+      // ignore storage errors
+    }
+  }, [localUserNotifications]);
+
+  const mergedUserNotifications = useMemo(() => {
+    const map = new Map<string, UserNotificationRecord>();
+    if (currentUser) {
+      firestoreUserNotifications.forEach((n) => map.set(n.id, n));
+      localUserNotifications
+        .filter((n) => n.userId === currentUser.uid)
+        .forEach((n) => {
+          if (!map.has(n.id)) map.set(n.id, n);
+        });
+    } else {
+      localUserNotifications.forEach((n) => map.set(n.id, n));
+    }
+    return Array.from(map.values()).sort((a, b) => b.createdAtMs - a.createdAtMs);
+  }, [currentUser, firestoreUserNotifications, localUserNotifications]);
+
+  const unreadUserNotificationCount = useMemo(
+    () => mergedUserNotifications.filter((n) => !n.read).length,
+    [mergedUserNotifications]
+  );
+
   const openAccountSettings = (tab: SettingsTabKey = 'profile') => {
     setSettingsModalTab(tab);
     setIsSettingsModalOpen(true);
@@ -785,6 +882,166 @@ function StorefrontApp() {
     window.setTimeout(() => {
       setToastBanner((prev) => (prev === msg ? null : prev));
     }, 4500);
+  };
+
+  const handleShareProduct = (product: MarketplaceProduct, e?: React.MouseEvent) => {
+    if (e) {
+      e.stopPropagation();
+    }
+    setShareProduct(product);
+  };
+
+  // Push a real customer notification to Firestore (and live local feed)
+  const pushUserNotification = async (params: {
+    targetUserId?: string;
+    category: UserNotificationCategory;
+    eventType: UserNotificationEventType;
+    title: string;
+    message: string;
+    actionType?: UserNotificationActionType;
+    relatedId?: string;
+    trackingNumber?: string;
+    imageUrl?: string;
+    user?: User | null;
+  }) => {
+    const rec = await emitUserNotificationToFirestore({
+      ...params,
+      user: params.user || currentUser,
+    });
+    const isForCurrentViewer =
+      !params.targetUserId ||
+      (currentUser && params.targetUserId === currentUser.uid) ||
+      (!currentUser && params.targetUserId === 'guest_shopper');
+    if (isForCurrentViewer) {
+      setLocalUserNotifications((prev) => [rec, ...prev.filter((n) => n.id !== rec.id)].slice(0, 60));
+    }
+    return rec;
+  };
+
+  const handleMarkUserNotificationRead = async (notif: UserNotificationRecord) => {
+    setLocalUserNotifications((prev) =>
+      prev.map((n) => (n.id === notif.id ? { ...n, read: true } : n))
+    );
+    setFirestoreUserNotifications((prev) =>
+      prev.map((n) => (n.id === notif.id ? { ...n, read: true } : n))
+    );
+    if (currentUser && !notif.isLocalOnly && notif.userId === currentUser.uid) {
+      try {
+        await updateDoc(doc(db, 'users', currentUser.uid, 'notifications', notif.id), {
+          read: true,
+        });
+      } catch (err) {
+        console.warn('Notification mark-as-read skipped:', err);
+      }
+    }
+  };
+
+  const handleMarkAllUserNotificationsRead = async () => {
+    const unreadList = mergedUserNotifications.filter((n) => !n.read);
+    if (unreadList.length === 0) return;
+
+    setLocalUserNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+    setFirestoreUserNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+
+    if (currentUser) {
+      for (const item of unreadList) {
+        if (!item.isLocalOnly && item.userId === currentUser.uid) {
+          try {
+            await updateDoc(doc(db, 'users', currentUser.uid, 'notifications', item.id), {
+              read: true,
+            });
+          } catch {
+            // continue marking remaining notifications
+          }
+        }
+      }
+    }
+  };
+
+  const handleDeleteUserNotification = async (notif: UserNotificationRecord) => {
+    setLocalUserNotifications((prev) => prev.filter((n) => n.id !== notif.id));
+    setFirestoreUserNotifications((prev) => prev.filter((n) => n.id !== notif.id));
+    if (currentUser && !notif.isLocalOnly && notif.userId === currentUser.uid) {
+      try {
+        await deleteDoc(doc(db, 'users', currentUser.uid, 'notifications', notif.id));
+      } catch (err) {
+        console.warn('Notification delete skipped:', err);
+      }
+    }
+  };
+
+  const handleClearReadUserNotifications = async () => {
+    const readItems = mergedUserNotifications.filter((n) => n.read);
+    if (readItems.length === 0) return;
+    setLocalUserNotifications((prev) => prev.filter((n) => !n.read));
+    setFirestoreUserNotifications((prev) => prev.filter((n) => !n.read));
+    if (currentUser) {
+      for (const item of readItems) {
+        if (!item.isLocalOnly && item.userId === currentUser.uid) {
+          try {
+            await deleteDoc(doc(db, 'users', currentUser.uid, 'notifications', item.id));
+          } catch {
+            // continue deleting remaining read notifications
+          }
+        }
+      }
+    }
+  };
+
+  const handleUserNotificationAction = (notif: UserNotificationRecord) => {
+    setIsNotificationCenterOpen(false);
+    switch (notif.actionType) {
+      case 'open_order': {
+        const matched =
+          orders.find(
+            (o) =>
+              o.id === notif.relatedId ||
+              o.orderNumber === notif.relatedId ||
+              (notif.trackingNumber &&
+                resolveOrderTrackingNumber(o).toUpperCase() ===
+                  notif.trackingNumber.toUpperCase())
+          ) ||
+          (lastPlacedTrackableOrder &&
+          (lastPlacedTrackableOrder.id === notif.relatedId ||
+            lastPlacedTrackableOrder.orderNumber === notif.relatedId)
+            ? lastPlacedTrackableOrder
+            : null);
+
+        if (matched) {
+          setTrackingOrder(matched);
+        } else {
+          setActiveBottomTab('account');
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+        break;
+      }
+      case 'open_product': {
+        const matchedProd = catalog.find(
+          (p) =>
+            p.id === notif.relatedId || sanitizeId(p.id) === sanitizeId(notif.relatedId)
+        );
+        if (matchedProd) {
+          openProductDetails(matchedProd);
+        } else {
+          setActiveBottomTab('shop');
+        }
+        break;
+      }
+      case 'open_deals':
+        setActiveBottomTab('buykit');
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        break;
+      case 'open_coupons':
+        setActiveBottomTab('account');
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        break;
+      case 'open_cart':
+        setActiveBottomTab('cart');
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        break;
+      default:
+        break;
+    }
   };
 
   // Horizontal Category Scroll Handler
@@ -1178,6 +1435,49 @@ function StorefrontApp() {
     setSelectedProduct(product);
   };
 
+  // Open product automatically when visiting a shared ?product=<id> link
+  useEffect(() => {
+    if (deepLinkOpenedRef.current || catalog.length === 0) return;
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const sharedProductId = params.get('product');
+      if (!sharedProductId) {
+        deepLinkOpenedRef.current = true;
+        return;
+      }
+      const matched = catalog.find(
+        (p) =>
+          p.id === sharedProductId ||
+          sanitizeId(p.id) === sanitizeId(sharedProductId)
+      );
+      if (matched) {
+        deepLinkOpenedRef.current = true;
+        openProductDetails(matched);
+      }
+    } catch {
+      deepLinkOpenedRef.current = true;
+    }
+  }, [catalog]);
+
+  // Keep browser address bar synced with ?product=<id> when viewing/closing a product
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const url = new URL(window.location.href);
+      if (selectedProduct) {
+        if (url.searchParams.get('product') !== selectedProduct.id) {
+          window.history.replaceState(null, '', buildProductShareUrl(selectedProduct.id));
+        }
+      } else if (url.searchParams.has('product')) {
+        url.searchParams.delete('product');
+        const cleaned = `${url.pathname}${url.search}${url.hash}`;
+        window.history.replaceState(null, '', cleaned || '/');
+      }
+    } catch {
+      // ignore history errors in sandboxed iframes
+    }
+  }, [selectedProduct]);
+
   // Combine Product-Specific Coupons (added by Admin) with Storewide Checkout Coupons
   const getCombinedProductCoupons = (product: MarketplaceProduct) => {
     const customCoupons = product.productCoupons || [];
@@ -1429,6 +1729,13 @@ function StorefrontApp() {
             orderId: String(d.orderId || docSnap.id),
             userId: String(d.userId || ''),
             orderNumber: String(d.orderNumber || docSnap.id),
+            trackingNumber: d.trackingNumber
+              ? String(d.trackingNumber)
+              : resolveOrderTrackingNumber({
+                  id: docSnap.id,
+                  orderNumber: String(d.orderNumber || docSnap.id),
+                  createdAtMs: createdMs,
+                }),
             customerName: String(d.customerName || 'BuyKit Customer'),
             customerEmail: String(d.customerEmail || ''),
             customerPhone: String(d.customerPhone || ''),
@@ -1562,6 +1869,13 @@ function StorefrontApp() {
             id: docSnap.id,
             userId: String(d.userId || uid),
             orderNumber: String(d.orderNumber || docSnap.id),
+            trackingNumber: d.trackingNumber
+              ? String(d.trackingNumber)
+              : resolveOrderTrackingNumber({
+                  id: docSnap.id,
+                  orderNumber: String(d.orderNumber || docSnap.id),
+                  createdAtMs: createdMs,
+                }),
             summaryTitle: String(d.summaryTitle || 'Order'),
             itemCount: Number(d.itemCount || 1),
             totalAmount: Number(d.totalAmount || 0),
@@ -1609,11 +1923,90 @@ function StorefrontApp() {
       }
     );
 
+    const notificationsColPath = `users/${uid}/notifications`;
+    const notificationsQuery = query(
+      collection(db, notificationsColPath),
+      where('userId', '==', uid)
+    );
+    initialNotifLoadDoneRef.current = false;
+    seenNotifIdsRef.current = new Set();
+
+    const unsubUserNotifications = onSnapshot(
+      notificationsQuery,
+      (snapshot) => {
+        const list: UserNotificationRecord[] = snapshot.docs.map((docSnap) => {
+          const d = docSnap.data();
+          const createdMs =
+            d.createdAt && typeof d.createdAt.toMillis === 'function'
+              ? d.createdAt.toMillis()
+              : Date.now();
+          return {
+            id: docSnap.id,
+            notificationId: String(d.notificationId || docSnap.id),
+            userId: String(d.userId || uid),
+            category: (d.category as UserNotificationCategory) || 'system',
+            eventType: (d.eventType as UserNotificationEventType) || 'welcome',
+            title: String(d.title || 'BuyKit Notification'),
+            message: String(d.message || ''),
+            actionType: (d.actionType as UserNotificationActionType) || 'none',
+            relatedId: String(d.relatedId || ''),
+            trackingNumber: String(d.trackingNumber || ''),
+            imageUrl: String(d.imageUrl || ''),
+            read: Boolean(d.read),
+            createdAtMs: createdMs,
+            isLocalOnly: false,
+          };
+        });
+        list.sort((a, b) => b.createdAtMs - a.createdAtMs);
+        setFirestoreUserNotifications(list);
+
+        if (!initialNotifLoadDoneRef.current) {
+          initialNotifLoadDoneRef.current = true;
+          list.forEach((n) => seenNotifIdsRef.current.add(n.id));
+          // Seed a genuine welcome notification once for new signed-in shoppers
+          if (list.length === 0) {
+            const welcomeKey = `buykit_welcome_notif_seeded_${uid}`;
+            try {
+              if (!window.localStorage.getItem(welcomeKey)) {
+                window.localStorage.setItem(welcomeKey, '1');
+                void emitUserNotificationToFirestore({
+                  targetUserId: uid,
+                  category: 'promos',
+                  eventType: 'welcome',
+                  title: 'Welcome to BuyKit with Pramu — Starter Rewards Active!',
+                  message:
+                    'Your real-time Notification Center is live. You will get instant alerts for order status updates, tracking waybills, Q&A replies, and LKR Flash Sales.',
+                  actionType: 'open_deals',
+                  relatedId: 'deals',
+                  user: currentUser,
+                });
+              }
+            } catch {
+              // ignore storage errors
+            }
+          }
+        } else {
+          // Surface a live toast if a brand-new unread notification arrives in real time
+          const newlyArrived = list.find(
+            (n) => !n.read && !seenNotifIdsRef.current.has(n.id)
+          );
+          list.forEach((n) => seenNotifIdsRef.current.add(n.id));
+          if (newlyArrived) {
+            showToast(`${newlyArrived.title}`);
+          }
+        }
+      },
+      (err) => {
+        console.warn('User notifications listener warning:', err);
+      }
+    );
+
     return () => {
       unsubProfile();
       unsubCart();
       unsubOrders();
       unsubWishlist();
+      unsubUserNotifications();
     };
   }, [authReady, currentUser]);
 
@@ -2179,6 +2572,17 @@ function StorefrontApp() {
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
+        void pushUserNotification({
+          targetUserId: activeUser.uid,
+          category: 'activity',
+          eventType: 'wishlist_saved',
+          title: 'Saved to Wishlist',
+          message: `"${product.title}" (${formatLKR(unitPrice)}) is now saved in your Wishlist.`,
+          actionType: 'open_product',
+          relatedId: product.id,
+          imageUrl: product.imageUrl,
+          user: activeUser,
+        });
         showToast(`Saved "${product.title}" to your Wishlist!`);
       }
     } catch (err) {
@@ -2309,6 +2713,16 @@ function StorefrontApp() {
         updatedAt: serverTimestamp(),
       });
       setNewUserDealClaimed(true);
+      void pushUserNotification({
+        targetUserId: currentUser.uid,
+        category: 'promos',
+        eventType: 'voucher_claimed',
+        title: 'Rs. 5,000 New User Starter Voucher Unlocked!',
+        message:
+          'Extra LKR Starter Pass discounts are now active across eligible BuyKit with Pramu products.',
+        actionType: 'open_deals',
+        relatedId: 'new_user_voucher',
+      });
       showToast('New User Welcome Voucher activated! Extra LKR discounts unlocked across all deals.');
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, userPath);
@@ -2361,12 +2775,15 @@ function StorefrontApp() {
       unitPrice: item.price,
       originalPrice: item.originalPrice,
       category: item.category,
+      productId: item.productId,
+      imageUrl: item.imageUrl,
     }));
     const invoiceItemsSubtotal = activeCheckoutItems.reduce(
       (acc, item) => acc + item.price * item.quantity,
       0
     );
     const createdTimestampMs = Date.now();
+    const realTrackingNumber = generateRealTrackingNumber(createdTimestampMs);
     const formattedFullAddress = `${cleanAddress}${cityDistrict ? `, ${cityDistrict}` : ''} (${cleanPostal})`;
 
     // If guest user clicks Place Order, create a live demo order and remove ONLY checked-out items
@@ -2376,6 +2793,7 @@ function StorefrontApp() {
       saveOrderInvoiceMetadata({
         orderId,
         orderNumber: orderCode,
+        trackingNumber: realTrackingNumber,
         items: invoiceLineItems,
         subtotal: invoiceItemsSubtotal,
         couponCode: summary.couponCode || 'NO_COUPON',
@@ -2391,10 +2809,28 @@ function StorefrontApp() {
         createdAtMs: createdTimestampMs,
       });
 
+      saveRealTrackingRecord({
+        trackingNumber: realTrackingNumber,
+        orderId,
+        orderNumber: orderCode,
+        carrierName: DEFAULT_CARRIER_NAME,
+        carrierCode: DEFAULT_CARRIER_PREFIX,
+        originFacility: 'BuyKit Central Fulfillment Warehouse · Colombo 03',
+        destinationHub: cleanHubName,
+        summaryTitle: cleanSummary,
+        itemCount: cleanItemCount,
+        totalAmount: cleanTotalAmount,
+        paymentMethod,
+        status: 'preparing',
+        createdAtMs: createdTimestampMs,
+        updatedAtMs: createdTimestampMs,
+      });
+
       const guestOrder: TrackableOrder = {
         id: orderId,
         userId: 'guest_shopper',
         orderNumber: orderCode,
+        trackingNumber: realTrackingNumber,
         summaryTitle: cleanSummary,
         itemCount: cleanItemCount,
         totalAmount: cleanTotalAmount,
@@ -2429,6 +2865,7 @@ function StorefrontApp() {
         orderId,
         userId: 'guest_shopper',
         orderNumber: orderCode,
+        trackingNumber: realTrackingNumber,
         customerName: fullName.trim() || 'Guest Shopper',
         customerEmail: userEmail.trim() || 'guest@buykit.lk',
         customerPhone: cleanPhone,
@@ -2440,8 +2877,8 @@ function StorefrontApp() {
         paymentLabel: summary.paymentMethodLabel.slice(0, 140),
         pickupHubName: cleanHubName,
         status: 'preparing',
-        createdAtMs: Date.now(),
-        updatedAtMs: Date.now(),
+        createdAtMs: createdTimestampMs,
+        updatedAtMs: createdTimestampMs,
         isLocalOnly: true,
       };
       setLocalAdminOrders((prev) => [localGuestAdminOrder, ...prev]);
@@ -2453,6 +2890,18 @@ function StorefrontApp() {
         relatedId: orderId,
         fallbackActorName: localGuestAdminOrder.customerName,
         fallbackActorEmail: localGuestAdminOrder.customerEmail,
+      });
+
+      void pushUserNotification({
+        targetUserId: 'guest_shopper',
+        category: 'orders',
+        eventType: 'order_placed',
+        title: `Order #${orderCode} Confirmed!`,
+        message: `${cleanSummary} (${formatLKR(cleanTotalAmount)}) is being prepared for dispatch via ${cleanHubName}.`,
+        actionType: 'open_order',
+        relatedId: orderId,
+        trackingNumber: realTrackingNumber,
+        imageUrl: activeCheckoutItems[0]?.imageUrl || '',
       });
 
       if (!summary.suppressAutoRedirect) {
@@ -2514,6 +2963,7 @@ function StorefrontApp() {
       await setDoc(doc(db, 'users', uid, 'orders', orderId), {
         userId: uid,
         orderNumber: orderCode,
+        trackingNumber: realTrackingNumber,
         summaryTitle: cleanSummary,
         itemCount: cleanItemCount,
         totalAmount: cleanTotalAmount,
@@ -2530,6 +2980,7 @@ function StorefrontApp() {
           orderId,
           userId: uid,
           orderNumber: orderCode,
+          trackingNumber: realTrackingNumber,
           customerName: customerNameToSave,
           customerEmail: emailToSave,
           customerPhone: cleanPhone,
@@ -2554,6 +3005,7 @@ function StorefrontApp() {
           orderId,
           userId: uid,
           orderNumber: orderCode,
+          trackingNumber: realTrackingNumber,
           customerName: customerNameToSave,
           customerEmail: emailToSave,
           customerPhone: cleanPhone,
@@ -2565,8 +3017,8 @@ function StorefrontApp() {
           paymentLabel: cleanPaymentLabel,
           pickupHubName: cleanHubName,
           status: 'preparing',
-          createdAtMs: Date.now(),
-          updatedAtMs: Date.now(),
+          createdAtMs: createdTimestampMs,
+          updatedAtMs: createdTimestampMs,
         },
         ...prev,
       ]);
@@ -2574,11 +3026,24 @@ function StorefrontApp() {
       void pushAdminNotification({
         type: 'order_placed',
         title: `New Order #${orderCode} (${formatLKR(cleanTotalAmount)})`,
-        message: `${customerNameToSave} ordered ${cleanSummary} · Paid via ${cleanPaymentLabel}.`,
+        message: `${customerNameToSave} ordered ${cleanSummary} · Tracking: ${realTrackingNumber} · Paid via ${cleanPaymentLabel}.`,
         relatedId: orderId,
         user: currentUser,
         fallbackActorName: customerNameToSave,
         fallbackActorEmail: emailToSave,
+      });
+
+      void pushUserNotification({
+        targetUserId: uid,
+        category: 'orders',
+        eventType: 'order_placed',
+        title: `Order #${orderCode} Confirmed (${formatLKR(cleanTotalAmount)})`,
+        message: `Your order for ${cleanSummary} is confirmed and being packed at BuyKit Warehouse.`,
+        actionType: 'open_order',
+        relatedId: orderId,
+        trackingNumber: realTrackingNumber,
+        imageUrl: activeCheckoutItems[0]?.imageUrl || '',
+        user: currentUser,
       });
 
       // Remove ONLY the checked-out items (leave unselected cart items untouched)
@@ -2595,6 +3060,7 @@ function StorefrontApp() {
       saveOrderInvoiceMetadata({
         orderId,
         orderNumber: orderCode,
+        trackingNumber: realTrackingNumber,
         items: invoiceLineItems,
         subtotal: invoiceItemsSubtotal,
         couponCode: summary.couponCode || 'NO_COUPON',
@@ -2610,10 +3076,28 @@ function StorefrontApp() {
         createdAtMs: createdTimestampMs,
       });
 
+      saveRealTrackingRecord({
+        trackingNumber: realTrackingNumber,
+        orderId,
+        orderNumber: orderCode,
+        carrierName: DEFAULT_CARRIER_NAME,
+        carrierCode: DEFAULT_CARRIER_PREFIX,
+        originFacility: 'BuyKit Central Fulfillment Warehouse · Colombo 03',
+        destinationHub: cleanHubName,
+        summaryTitle: cleanSummary,
+        itemCount: cleanItemCount,
+        totalAmount: cleanTotalAmount,
+        paymentMethod,
+        status: 'preparing',
+        createdAtMs: createdTimestampMs,
+        updatedAtMs: createdTimestampMs,
+      });
+
       const confirmedOrderObj: TrackableOrder = {
         id: orderId,
         userId: uid,
         orderNumber: orderCode,
+        trackingNumber: realTrackingNumber,
         summaryTitle: cleanSummary,
         itemCount: cleanItemCount,
         totalAmount: cleanTotalAmount,
@@ -2670,37 +3154,19 @@ function StorefrontApp() {
       } catch {
         // Ignore if mirror doc didn't exist for legacy order
       }
-      showToast(`Order #${order.orderNumber} has been cancelled.`);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, orderPath);
-    }
-  };
-
-  const handleUpdateOrderTrackingStage = async (
-    order: TrackableOrder,
-    nextStage: OrderTrackingStageKey
-  ) => {
-    if (!isCurrentUserAdmin || !currentUser || order.isDemoOrder || order.status === 'cancelled') {
-      return;
-    }
-    if (order.status === 'delivered') return;
-
-    const orderPath = `users/${order.userId}/orders/${order.id}`;
-    try {
-      await updateDoc(doc(db, 'users', order.userId, 'orders', order.id), {
-        status: nextStage,
-        updatedAt: serverTimestamp(),
+      updateRealTrackingStatus(order.id, order.orderNumber, 'cancelled');
+      void pushUserNotification({
+        targetUserId: currentUser.uid,
+        category: 'orders',
+        eventType: 'order_cancelled',
+        title: `Order #${order.orderNumber} Cancelled`,
+        message: `Your order (${order.summaryTitle}) has been cancelled as requested.`,
+        actionType: 'open_order',
+        relatedId: order.id,
+        trackingNumber: resolveOrderTrackingNumber(order),
+        user: currentUser,
       });
-      try {
-        await updateDoc(doc(db, 'admin_orders', order.id), {
-          status: nextStage,
-          updatedAt: serverTimestamp(),
-        });
-      } catch {
-        // Ignore if legacy order has no mirror doc
-      }
-      const stageLabel = getStageLabelFromStatus(nextStage);
-      showToast(`Order #${order.orderNumber} tracking updated to "${stageLabel}"!`);
+      showToast(`Order #${order.orderNumber} has been cancelled.`);
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, orderPath);
     }
@@ -2720,7 +3186,32 @@ function StorefrontApp() {
         o.orderId === order.orderId ? { ...o, status: nextStatus, updatedAtMs: Date.now() } : o
       )
     );
+    updateRealTrackingStatus(order.orderId, order.orderNumber, nextStatus);
+    const statusLabel = getStageLabelFromStatus(nextStatus);
+    const notifEventType: UserNotificationEventType =
+      nextStatus === 'delivered'
+        ? 'order_delivered'
+        : nextStatus === 'shipped'
+        ? 'order_shipped'
+        : nextStatus === 'in_transit'
+        ? 'order_in_transit'
+        : nextStatus === 'dispatched'
+        ? 'order_dispatched'
+        : nextStatus === 'cancelled'
+        ? 'order_cancelled'
+        : 'order_preparing';
+
     if (order.isLocalOnly) {
+      void pushUserNotification({
+        targetUserId: order.userId || 'guest_shopper',
+        category: 'orders',
+        eventType: notifEventType,
+        title: `Order #${order.orderNumber}: ${statusLabel}`,
+        message: `Your shipment (${order.summaryTitle}) status has been updated to ${statusLabel}.`,
+        actionType: 'open_order',
+        relatedId: order.orderId,
+        trackingNumber: order.trackingNumber || '',
+      });
       showToast(`Order #${order.orderNumber} status changed to "${nextStatus}".`);
       return;
     }
@@ -2738,6 +3229,17 @@ function StorefrontApp() {
         } catch {
           // Customer order subdoc may not exist for older/guest orders
         }
+        // Push real-time Daraz/AliExpress shipping notification straight to customer's Notification Bell
+        void pushUserNotification({
+          targetUserId: order.userId,
+          category: 'orders',
+          eventType: notifEventType,
+          title: `Order #${order.orderNumber}: ${statusLabel}`,
+          message: `BuyKit Express update: "${order.summaryTitle}" is now ${statusLabel}. Tap to view live tracking.`,
+          actionType: 'open_order',
+          relatedId: order.orderId,
+          trackingNumber: order.trackingNumber || '',
+        });
       }
       showToast(`Updated Order #${order.orderNumber} status to "${nextStatus.toUpperCase()}".`);
     } catch (err) {
@@ -2775,6 +3277,21 @@ function StorefrontApp() {
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
+      if (question.userId && question.userId !== 'guest_shopper') {
+        const matchedProd = catalog.find(
+          (p) => p.id === question.productId || sanitizeId(p.id) === question.productId
+        );
+        void pushUserNotification({
+          targetUserId: question.userId,
+          category: 'activity',
+          eventType: 'question_answered',
+          title: 'Seller Answered Your Product Question',
+          message: `"${cleanAns.slice(0, 180)}"`,
+          actionType: 'open_product',
+          relatedId: matchedProd?.id || question.productId,
+          imageUrl: matchedProd?.imageUrl || '',
+        });
+      }
       showToast('Posted Official Admin Reply to customer question!');
     } catch (err) {
       handleFirestoreError(err, OperationType.CREATE, answerPath);
@@ -3358,6 +3875,17 @@ function StorefrontApp() {
             <span>{isInStock ? t.inStock : t.outOfStock}</span>
           </span>
 
+          {/* TOP-RIGHT CORNER: One-Tap Share Product Link Button */}
+          <button
+            type="button"
+            onClick={(e) => handleShareProduct(product, e)}
+            aria-label={`Share ${product.title}`}
+            title="Share product link"
+            className="absolute top-2 right-2 z-10 flex h-8 w-8 items-center justify-center rounded-full bg-white/95 text-slate-700 shadow-sm transition-colors hover:bg-[#F85606] hover:text-white"
+          >
+            <Share2 className="h-3.5 w-3.5" />
+          </button>
+
           {/* BOTTOM-LEFT: Discount Percentage Badge */}
           <div className="absolute bottom-2 left-2 rounded-md bg-[#F85606] px-2 py-0.5 font-mono text-[11px] font-extrabold text-white shadow-2xs">
             -{discountPercent}% OFF
@@ -3611,6 +4139,21 @@ function StorefrontApp() {
               className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-slate-50 p-2 text-slate-700 transition-colors hover:border-[#F85606] hover:bg-[#FFF3EB] hover:text-[#F85606]"
             >
               <Settings className="h-4 w-4" />
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setIsNotificationCenterOpen(true)}
+              aria-label={`Notifications${unreadUserNotificationCount > 0 ? ` (${unreadUserNotificationCount} unread)` : ''}`}
+              title="Notifications: Orders, Tracking Updates, Vouchers & Replies"
+              className="relative inline-flex items-center justify-center rounded-lg border border-slate-200 bg-slate-50 p-2 text-slate-700 transition-colors hover:border-[#F85606] hover:bg-[#FFF3EB] hover:text-[#F85606]"
+            >
+              <Bell className="h-4 w-4" />
+              {unreadUserNotificationCount > 0 && (
+                <span className="absolute -top-1.5 -right-1.5 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-[#F85606] px-1 font-mono text-[9px] font-extrabold text-white shadow-xs tabular-nums">
+                  {unreadUserNotificationCount > 99 ? '99+' : unreadUserNotificationCount}
+                </span>
+              )}
             </button>
 
             <button
@@ -4513,6 +5056,15 @@ function StorefrontApp() {
                             >
                               {isInStock ? 'In Stock' : 'Out of Stock'}
                             </span>
+                            <button
+                              type="button"
+                              onClick={(e) => handleShareProduct(prod, e)}
+                              aria-label={`Share ${prod.title}`}
+                              title="Share product link"
+                              className="absolute top-1.5 right-1.5 flex h-7 w-7 items-center justify-center rounded-full bg-white/95 text-slate-700 shadow-xs transition-colors hover:bg-[#F85606] hover:text-white"
+                            >
+                              <Share2 className="h-3.5 w-3.5" />
+                            </button>
                             <span className="absolute bottom-1.5 left-1.5 rounded bg-[#F85606] px-1.5 py-0.5 font-mono text-[10px] font-extrabold text-white">
                               -{discPct}% OFF
                             </span>
@@ -4585,6 +5137,7 @@ function StorefrontApp() {
               onOpenProduct={(prod) => openProductDetails(prod)}
               onAddToCart={(prod, q) => handleAddToCart(prod, q)}
               onBuyNow={(prod, q) => handleBuyNow(prod, q)}
+              onShareProduct={handleShareProduct}
             />
 
             {/* If user is actively filtering/searching by price or keyword, show filtered results immediately at top! */}
@@ -5089,6 +5642,7 @@ function StorefrontApp() {
             onOpenDemoTrackingModal={handleOpenDemoTrackingModal}
             onCancelOrder={handleCancelOrder}
             onOpenProductDetails={openProductDetails}
+            onShareProduct={handleShareProduct}
             onAddToCart={(prod, q) => handleAddToCart(prod, q)}
             onBuyNow={(prod, q) => handleBuyNow(prod, q)}
             onToggleWishlist={handleToggleWishlist}
@@ -5328,8 +5882,18 @@ function StorefrontApp() {
                       </div>
                     </div>
 
-                    {/* Far Right: Compare, Wishlist & Close inline with Back to Shop */}
+                    {/* Far Right: Share, Compare, Wishlist & Close inline with Back to Shop */}
                     <div className="ml-auto flex shrink-0 items-center gap-1.5 sm:gap-2">
+                      <button
+                        type="button"
+                        onClick={(e) => handleShareProduct(selectedProduct, e)}
+                        title="Share product link"
+                        className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-bold text-slate-700 transition-colors hover:border-[#F85606] hover:bg-[#FFF3EB] hover:text-[#F85606]"
+                      >
+                        <Share2 className="h-3.5 w-3.5" />
+                        <span className="hidden sm:inline">Share</span>
+                      </button>
+
                       <button
                         type="button"
                         onClick={(e) => handleToggleCompare(selectedProduct, e)}
@@ -5957,6 +6521,18 @@ function StorefrontApp() {
                             message: `"${comment.slice(0, 160)}"`,
                             relatedId: productId,
                           });
+                          if (currentUser) {
+                            void pushUserNotification({
+                              targetUserId: currentUser.uid,
+                              category: 'activity',
+                              eventType: 'review_posted',
+                              title: `Thank you for your ${rating}★ review!`,
+                              message: `Your review on "${productTitle}" is now published on BuyKit with Pramu.`,
+                              actionType: 'open_product',
+                              relatedId: productId,
+                              imageUrl: selectedProduct?.imageUrl || '',
+                            });
+                          }
                         }}
                         onQuestionSubmitted={({ productId, productTitle, questionText }) => {
                           void pushAdminNotification({
@@ -6103,12 +6679,11 @@ function StorefrontApp() {
         }}
       />
 
-      {/* Order Tracking Modal (Shoppers view progress & download PDF invoice; only Admin can update order status) */}
+      {/* Order Tracking Modal (Strictly read-only progress, real tracking number & PDF invoice download) */}
       <OrderTrackingModal
         isOpen={Boolean(trackingOrder)}
         order={trackingOrder}
         onClose={() => setTrackingOrder(null)}
-        onUpdateOrderStage={isCurrentUserAdmin ? handleUpdateOrderTrackingStage : undefined}
         onCancelOrder={handleCancelOrder}
         fallbackCustomerInfo={{
           customerName: fullName.trim() || currentUser?.displayName || undefined,
@@ -6146,6 +6721,32 @@ function StorefrontApp() {
         onAddToCart={(prod, qty) => handleAddToCart(prod, qty)}
         onBuyNow={(prod, qty) => handleBuyNow(prod, qty)}
         onOpenProductDetails={(prod) => openProductDetails(prod)}
+      />
+
+      {/* Product Direct-Link Share Sheet (Copies / Shares ?product=<id> Deep Link) */}
+      <ProductShareModal
+        product={shareProduct}
+        effectivePrice={shareProduct ? getEffectivePrice(shareProduct) : 0}
+        onClose={() => setShareProduct(null)}
+        onCopiedLink={(prod) => showToast(`Copied direct product link for "${prod.title}"!`)}
+      />
+
+      {/* 100% Daraz / AliExpress Real-Time Notification Center Slide-Over Drawer */}
+      <DarazAliNotificationCenter
+        isOpen={isNotificationCenterOpen}
+        onClose={() => setIsNotificationCenterOpen(false)}
+        notifications={mergedUserNotifications}
+        isSignedIn={Boolean(currentUser)}
+        onSignIn={() => {
+          setPendingCartProduct(null);
+          setPendingBuyNowMode(false);
+          setIsAuthModalOpen(true);
+        }}
+        onMarkAsRead={handleMarkUserNotificationRead}
+        onMarkAllAsRead={handleMarkAllUserNotificationsRead}
+        onDeleteNotification={handleDeleteUserNotification}
+        onClearReadNotifications={handleClearReadUserNotifications}
+        onNotificationAction={handleUserNotificationAction}
       />
 
       {/* Daraz / AliExpress Account Settings Modal (Profile, Address, Contact Numbers, Country with Flag, Language & Add Credit/Debit Card) */}

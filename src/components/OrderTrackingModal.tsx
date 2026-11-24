@@ -1,14 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   X,
-  Package,
   Truck,
   CheckCircle2,
   MapPin,
   Clock,
   ShieldCheck,
-  ArrowRight,
   Copy,
   Check,
   Navigation,
@@ -21,6 +19,11 @@ import {
   downloadOrderInvoicePdf,
   InvoiceFallbackCustomerInfo,
 } from '../utils/invoicePdfGenerator';
+import {
+  DEFAULT_CARRIER_NAME,
+  resolveOrderTrackingNumber,
+  validateTrackingNumber,
+} from '../utils/trackingSystem';
 
 export type OrderStatusValue =
   | 'processing'
@@ -39,12 +42,15 @@ export interface OrderInvoiceLineItem {
   unitPrice: number;
   originalPrice?: number;
   category?: string;
+  productId?: string;
+  imageUrl?: string;
 }
 
 export interface TrackableOrder {
   id: string;
   userId: string;
   orderNumber: string;
+  trackingNumber?: string;
   summaryTitle: string;
   itemCount: number;
   totalAmount: number;
@@ -85,9 +91,9 @@ export const ORDER_TRACKING_STAGES: TimelineStageDefinition[] = [
     label: 'Preparing',
     shortSubtitle: 'Quality Check & Protective Packaging',
     description:
-      'Your order has been verified. Items are undergoing multi-point quality inspection, shock-resistant bubble wrapping, and barcode labeling at the BuyKit Fulfillment Center.',
+      'Your order has been verified. Items are undergoing quality inspection, protective packaging, and waybill barcode labeling at the BuyKit Fulfillment Center.',
     facilityLocation: 'BuyKit Central Fulfillment Warehouse · Colombo 03',
-    courierNote: 'Packing slip generated & assigned to express dispatch bay',
+    courierNote: 'Waybill generated & assigned to express dispatch bay',
     progressPercent: 25,
     offsetMinutes: 0,
     icon: Box,
@@ -113,7 +119,7 @@ export const ORDER_TRACKING_STAGES: TimelineStageDefinition[] = [
     description:
       'Shipment is actively in transit along the inter-city express route and arriving at your designated regional hub for final last-mile courier dispatch.',
     facilityLocation: 'Sri Lanka Express Linehaul Corridor',
-    courierNote: 'Live GPS courier telemetry active · On schedule',
+    courierNote: 'Courier telemetry active · On schedule',
     progressPercent: 75,
     offsetMinutes: 640,
     icon: Truck,
@@ -162,10 +168,6 @@ interface OrderTrackingModalProps {
   isOpen: boolean;
   order: TrackableOrder | null;
   onClose: () => void;
-  onUpdateOrderStage?: (
-    order: TrackableOrder,
-    nextStage: OrderTrackingStageKey
-  ) => Promise<void>;
   onCancelOrder?: (order: TrackableOrder) => Promise<void>;
   fallbackCustomerInfo?: InvoiceFallbackCustomerInfo;
 }
@@ -174,38 +176,25 @@ export const OrderTrackingModal: React.FC<OrderTrackingModalProps> = ({
   isOpen,
   order,
   onClose,
-  onUpdateOrderStage,
   onCancelOrder,
   fallbackCustomerInfo,
 }) => {
-  const [selectedStageIndex, setSelectedStageIndex] = useState<number>(0);
-  const [updatingStage, setUpdatingStage] = useState<boolean>(false);
   const [copiedTracking, setCopiedTracking] = useState<boolean>(false);
   const [invoiceDownloaded, setInvoiceDownloaded] = useState<boolean>(false);
-
-  useEffect(() => {
-    if (!order) return;
-    const mappedIdx = mapOrderStatusToStageIndex(order.status);
-    setSelectedStageIndex(mappedIdx >= 0 ? mappedIdx : 0);
-  }, [order?.id, order?.status]);
 
   if (!isOpen || !order) return null;
 
   const isCancelled = order.status === 'cancelled';
-  const canManageStage =
-    Boolean(onUpdateOrderStage) &&
-    !isCancelled &&
-    !order.isDemoOrder &&
-    order.status !== 'delivered';
-  const activeStageIdx = isCancelled ? -1 : selectedStageIndex;
+  const mappedIdx = mapOrderStatusToStageIndex(order.status);
+  const activeStageIdx = isCancelled ? -1 : mappedIdx >= 0 ? mappedIdx : 0;
   const activeStage =
     activeStageIdx >= 0
       ? ORDER_TRACKING_STAGES[activeStageIdx]
       : ORDER_TRACKING_STAGES[0];
 
   const progressPercentage = isCancelled ? 0 : activeStage.progressPercent;
-  const trackingCode = `BKP-LK-${order.orderNumber.replace(/[^a-zA-Z0-9]/g, '').toUpperCase()}`;
-
+  const trackingCode = resolveOrderTrackingNumber(order);
+  const trackingValidation = validateTrackingNumber(trackingCode);
   const baseTimestampMs = order.createdAtMs || Date.now() - 4 * 3600 * 1000;
 
   const formatStageTime = (offsetMinutes: number, isReached: boolean) => {
@@ -228,29 +217,9 @@ export const OrderTrackingModal: React.FC<OrderTrackingModalProps> = ({
   };
 
   const handleDownloadInvoice = () => {
-    downloadOrderInvoicePdf(order, fallbackCustomerInfo);
+    downloadOrderInvoicePdf({ ...order, trackingNumber: trackingCode }, fallbackCustomerInfo);
     setInvoiceDownloaded(true);
     window.setTimeout(() => setInvoiceDownloaded(false), 2200);
-  };
-
-  const handleSelectOrPersistStage = async (stageIndex: number) => {
-    if (!canManageStage || !onUpdateOrderStage) return;
-    const targetStage = ORDER_TRACKING_STAGES[stageIndex];
-    if (!targetStage) return;
-
-    setSelectedStageIndex(stageIndex);
-    setUpdatingStage(true);
-    try {
-      await onUpdateOrderStage(order, targetStage.key);
-    } finally {
-      setUpdatingStage(false);
-    }
-  };
-
-  const handleAdvanceNextStage = async () => {
-    if (!canManageStage) return;
-    const nextIdx = Math.min(ORDER_TRACKING_STAGES.length - 1, selectedStageIndex + 1);
-    await handleSelectOrPersistStage(nextIdx);
   };
 
   return (
@@ -282,16 +251,16 @@ export const OrderTrackingModal: React.FC<OrderTrackingModalProps> = ({
                     Order #{order.orderNumber}
                   </span>
                   <span aria-hidden="true">·</span>
-                  <span>BuyKit Express Logistics</span>
+                  <span>{trackingValidation.carrierName || DEFAULT_CARRIER_NAME}</span>
                   {order.isDemoOrder && (
                     <>
                       <span aria-hidden="true">·</span>
-                      <span className="font-semibold text-[#F85606]">Interactive Demo Order</span>
+                      <span className="font-semibold text-[#F85606]">Sample Preview</span>
                     </>
                   )}
                 </div>
                 <h2 className="font-display text-lg font-bold text-slate-950 sm:text-xl">
-                  Real-Time Order Tracking & Delivery Timeline
+                  Order Tracking & Delivery Timeline
                 </h2>
               </div>
             </div>
@@ -323,7 +292,7 @@ export const OrderTrackingModal: React.FC<OrderTrackingModalProps> = ({
             )}
 
             {/* =========================================================
-                1. VISUAL PROGRESS BAR & HORIZONTAL 4-STAGE STEPPER
+                1. READ-ONLY VISUAL PROGRESS BAR & 4-STAGE STEPPER
                ========================================================= */}
             <div className="rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-900 via-slate-900 to-slate-950 p-5 text-white shadow-sm sm:p-6">
               <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
@@ -340,7 +309,7 @@ export const OrderTrackingModal: React.FC<OrderTrackingModalProps> = ({
                       {isCancelled ? 'Order Cancelled' : activeStage.label}
                     </h3>
                     {!isCancelled && (
-                      <span className="rounded-md bg-[#F85606] px-2.5 py-0.5 font-mono text-xs font-bold text-white">
+                      <span className="font-mono text-xs font-semibold text-orange-300 tabular-nums">
                         Stage {activeStage.stepNumber} of 4
                       </span>
                     )}
@@ -352,9 +321,11 @@ export const OrderTrackingModal: React.FC<OrderTrackingModalProps> = ({
                   </p>
                 </div>
 
-                {/* Tracking Number Copy Box */}
+                {/* Real Checksum-Verified Waybill / Tracking Number Box */}
                 <div className="flex flex-col items-start rounded-xl border border-white/10 bg-white/5 px-3.5 py-2.5 sm:items-end">
-                  <span className="text-[11px] text-slate-400">Waybill / Tracking Number</span>
+                  <span className="text-[11px] text-slate-400">
+                    Official Waybill / Tracking Number
+                  </span>
                   <div className="mt-0.5 flex items-center gap-2">
                     <span className="font-mono text-xs font-bold tracking-wider text-white tabular-nums">
                       {trackingCode}
@@ -377,6 +348,11 @@ export const OrderTrackingModal: React.FC<OrderTrackingModalProps> = ({
                       )}
                     </button>
                   </div>
+                  {trackingValidation.isValid && (
+                    <span className="mt-1 text-[10px] font-medium text-emerald-300">
+                      Verified Waybill · {trackingValidation.carrierName}
+                    </span>
+                  )}
                 </div>
               </div>
 
@@ -397,7 +373,7 @@ export const OrderTrackingModal: React.FC<OrderTrackingModalProps> = ({
                   />
                 </div>
 
-                {/* 4 Stage Stepper Nodes Below Progress Bar */}
+                {/* 4 Read-Only Stage Stepper Nodes Below Progress Bar */}
                 <div className="mt-4 grid grid-cols-4 gap-2">
                   {ORDER_TRACKING_STAGES.map((stage, idx) => {
                     const StageIcon = stage.icon;
@@ -406,18 +382,9 @@ export const OrderTrackingModal: React.FC<OrderTrackingModalProps> = ({
                     const isReached = isCompleted || isCurrent;
 
                     return (
-                      <button
+                      <div
                         key={stage.key}
-                        type="button"
-                        disabled={!canManageStage || updatingStage}
-                        onClick={() => {
-                          if (canManageStage) {
-                            void handleSelectOrPersistStage(idx);
-                          }
-                        }}
-                        className={`group flex flex-col items-center rounded-xl border p-2.5 text-center transition-all ${
-                          canManageStage ? 'cursor-pointer' : 'cursor-default'
-                        } ${
+                        className={`flex flex-col items-center rounded-xl border p-2.5 text-center ${
                           isCurrent
                             ? 'border-[#F85606] bg-[#F85606]/20 text-white shadow-xs'
                             : isCompleted
@@ -446,46 +413,19 @@ export const OrderTrackingModal: React.FC<OrderTrackingModalProps> = ({
                         <span className="mt-0.5 font-mono text-[10px] opacity-75 tabular-nums">
                           {isReached ? `${stage.progressPercent}%` : `Step ${stage.stepNumber}`}
                         </span>
-                      </button>
+                      </div>
                     );
                   })}
                 </div>
               </div>
 
-              {/* Admin-Only Stage Controls Bar (Hidden for regular shoppers) */}
-              {canManageStage && (
-                <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-white/10 pt-3.5 text-xs">
-                  <span className="text-slate-300">
-                    Admin Control: Update live shipment stage for this customer order:
-                  </span>
-                  <div className="flex items-center gap-2">
-                    {selectedStageIndex < ORDER_TRACKING_STAGES.length - 1 ? (
-                      <button
-                        type="button"
-                        disabled={updatingStage}
-                        onClick={handleAdvanceNextStage}
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-[#F85606] px-3.5 py-1.5 text-xs font-bold text-white transition-colors hover:bg-[#d94800] disabled:opacity-50"
-                      >
-                        <span>
-                          {updatingStage
-                            ? 'Updating...'
-                            : `Advance to "${ORDER_TRACKING_STAGES[selectedStageIndex + 1].label}"`}
-                        </span>
-                        <ArrowRight className="h-3.5 w-3.5" />
-                      </button>
-                    ) : (
-                      <span className="inline-flex items-center gap-1 font-semibold text-emerald-400">
-                        <CheckCircle2 className="h-4 w-4" />
-                        <span>All 4 Delivery Stages Completed (100%)</span>
-                      </span>
-                    )}
-                  </div>
-                </div>
-              )}
+              <div className="mt-4 border-t border-white/10 pt-3 text-[11px] text-slate-400">
+                Shipment milestones are updated automatically by BuyKit Express Logistics as your parcel passes each scanning hub.
+              </div>
             </div>
 
             {/* =========================================================
-                2. VERTICAL TIMELINE COMPONENT ('Preparing' -> 'Dispatched' -> 'In Transit' -> 'Delivered')
+                2. READ-ONLY VERTICAL MILESTONE TIMELINE
                ========================================================= */}
             <div className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-6">
               <div className="mb-5 flex flex-wrap items-center justify-between gap-2">
@@ -494,7 +434,7 @@ export const OrderTrackingModal: React.FC<OrderTrackingModalProps> = ({
                     Shipment Milestone Timeline
                   </h3>
                   <p className="text-xs text-slate-500">
-                    Step-by-step checkpoint log from BuyKit warehouse to {order.pickupHubName}
+                    Checkpoint scan history from BuyKit warehouse to {order.pickupHubName}
                   </p>
                 </div>
                 <span className="font-mono text-xs text-slate-500 tabular-nums">
@@ -520,14 +460,7 @@ export const OrderTrackingModal: React.FC<OrderTrackingModalProps> = ({
                   return (
                     <div
                       key={stage.key}
-                      onClick={() => {
-                        if (canManageStage) {
-                          void handleSelectOrPersistStage(idx);
-                        }
-                      }}
-                      className={`group relative flex gap-4 pb-7 ${
-                        canManageStage ? 'cursor-pointer' : ''
-                      } ${isLast ? 'pb-0' : ''}`}
+                      className={`relative flex gap-4 pb-7 ${isLast ? 'pb-0' : ''}`}
                     >
                       {/* Vertical Timeline Connector Line */}
                       {!isLast && (
@@ -550,7 +483,7 @@ export const OrderTrackingModal: React.FC<OrderTrackingModalProps> = ({
 
                       {/* Timeline Node Circle */}
                       <div
-                        className={`relative z-10 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border-2 transition-all ${
+                        className={`relative z-10 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border-2 ${
                           isCurrent
                             ? 'border-[#F85606] bg-[#F85606] text-white shadow-md ring-4 ring-orange-100'
                             : isCompleted
@@ -567,7 +500,7 @@ export const OrderTrackingModal: React.FC<OrderTrackingModalProps> = ({
 
                       {/* Timeline Card Body */}
                       <div
-                        className={`min-w-0 flex-1 rounded-xl border p-4 transition-all ${
+                        className={`min-w-0 flex-1 rounded-xl border p-4 ${
                           isCurrent
                             ? 'border-[#F85606] bg-[#FFF8F5] shadow-2xs'
                             : isCompleted
@@ -650,7 +583,7 @@ export const OrderTrackingModal: React.FC<OrderTrackingModalProps> = ({
                   <MapPin className="h-3.5 w-3.5 shrink-0 text-[#F85606]" />
                   <span className="truncate">{order.pickupHubName}</span>
                 </p>
-                <p className="text-[11px] text-emerald-700 font-medium">
+                <p className="text-[11px] font-medium text-emerald-700">
                   Islandwide Express Courier Insured
                 </p>
               </div>

@@ -69,6 +69,7 @@ import {
   FirestoreQuestionAnswer,
 } from './ProductReviewsAndQaSection';
 import { OrderStatusValue } from './OrderTrackingModal';
+import { resolveOrderTrackingNumber } from '../utils/trackingSystem';
 
 export interface AdminBannerItem {
   id: string;
@@ -470,8 +471,15 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
     return adminOrders.filter((ord) => {
       if (orderStatusFilter !== 'all' && ord.status !== orderStatusFilter) return false;
       if (!q) return true;
+      const trackingNum = resolveOrderTrackingNumber({
+        id: ord.orderId,
+        orderNumber: ord.orderNumber,
+        trackingNumber: ord.trackingNumber,
+        createdAtMs: ord.createdAtMs,
+      });
       return (
         ord.orderNumber.toLowerCase().includes(q) ||
+        trackingNum.toLowerCase().includes(q) ||
         ord.customerName.toLowerCase().includes(q) ||
         ord.customerEmail.toLowerCase().includes(q) ||
         ord.customerPhone.toLowerCase().includes(q) ||
@@ -2929,21 +2937,29 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
                         <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 pb-3">
                           <div>
                             <div className="flex flex-wrap items-center gap-2">
-                              <span className="font-mono text-sm font-extrabold text-slate-950">
-                                #{ord.orderNumber}
-                              </span>
-                              <span
-                                className={`rounded-md px-2.5 py-0.5 text-[11px] font-extrabold uppercase ${statusMeta.colorClass}`}
-                              >
-                                {statusMeta.label}
-                              </span>
-                              <span className="text-[11px] text-slate-400">
-                                {formatRelativeTime(ord.createdAtMs)}
-                              </span>
-                            </div>
-                            <p className="mt-1 text-sm font-bold text-slate-900">
-                              {ord.summaryTitle}
-                            </p>
+                                <span className="font-mono text-sm font-extrabold text-slate-950">
+                                  #{ord.orderNumber}
+                                </span>
+                                <span className="font-mono text-[11px] font-semibold text-[#F85606] tabular-nums">
+                                  {resolveOrderTrackingNumber({
+                                    id: ord.orderId,
+                                    orderNumber: ord.orderNumber,
+                                    trackingNumber: ord.trackingNumber,
+                                    createdAtMs: ord.createdAtMs,
+                                  })}
+                                </span>
+                                <span
+                                  className={`rounded-md px-2.5 py-0.5 text-[11px] font-extrabold uppercase ${statusMeta.colorClass}`}
+                                >
+                                  {statusMeta.label}
+                                </span>
+                                <span className="text-[11px] text-slate-400">
+                                  {formatRelativeTime(ord.createdAtMs)}
+                                </span>
+                              </div>
+                              <p className="mt-1 text-sm font-bold text-slate-900">
+                                {ord.summaryTitle}
+                              </p>
                           </div>
 
                           <div className="text-right font-mono">

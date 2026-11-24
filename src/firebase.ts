@@ -179,6 +179,7 @@ export interface AdminOrderRecord {
   orderId: string;
   userId: string;
   orderNumber: string;
+  trackingNumber?: string;
   customerName: string;
   customerEmail: string;
   customerPhone: string;
@@ -264,6 +265,115 @@ export async function emitAdminNotificationToFirestore(params: {
     } catch (err) {
       // Never block shopper checkout/cart/review UX if notification write fails
       console.warn('Admin notification Firestore write skipped:', err);
+    }
+  }
+
+  return localRecord;
+}
+
+export type UserNotificationCategory = 'orders' | 'promos' | 'activity' | 'system';
+
+export type UserNotificationEventType =
+  | 'order_placed'
+  | 'order_preparing'
+  | 'order_dispatched'
+  | 'order_in_transit'
+  | 'order_shipped'
+  | 'order_delivered'
+  | 'order_cancelled'
+  | 'voucher_claimed'
+  | 'flash_sale'
+  | 'wishlist_saved'
+  | 'question_answered'
+  | 'review_posted'
+  | 'welcome'
+  | 'admin_broadcast';
+
+export type UserNotificationActionType =
+  | 'open_order'
+  | 'open_product'
+  | 'open_coupons'
+  | 'open_deals'
+  | 'open_cart'
+  | 'none';
+
+export interface UserNotificationRecord {
+  id: string;
+  notificationId: string;
+  userId: string;
+  category: UserNotificationCategory;
+  eventType: UserNotificationEventType;
+  title: string;
+  message: string;
+  actionType: UserNotificationActionType;
+  relatedId: string;
+  trackingNumber: string;
+  imageUrl: string;
+  read: boolean;
+  createdAtMs: number;
+  isLocalOnly?: boolean;
+}
+
+export async function emitUserNotificationToFirestore(params: {
+  targetUserId?: string;
+  category: UserNotificationCategory;
+  eventType: UserNotificationEventType;
+  title: string;
+  message: string;
+  actionType?: UserNotificationActionType;
+  relatedId?: string;
+  trackingNumber?: string;
+  imageUrl?: string;
+  user?: User | null;
+}): Promise<UserNotificationRecord> {
+  const activeUser = params.user || auth.currentUser;
+  const resolvedUid = sanitizeId(params.targetUserId || activeUser?.uid || 'guest_shopper');
+  const notificationId = sanitizeId(
+    `unotif_${params.eventType}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
+  );
+  const cleanTitle = params.title.trim().slice(0, 140) || 'BuyKit Notification';
+  const cleanMessage = params.message.trim().slice(0, 500) || 'You have a new update.';
+  const cleanActionType: UserNotificationActionType = params.actionType || 'none';
+  const cleanRelatedId = (params.relatedId || '').trim().slice(0, VALIDATION_LIMITS.MAX_ID_LEN);
+  const cleanTrackingNumber = (params.trackingNumber || '').trim().slice(0, 40);
+  const cleanImageUrl = (params.imageUrl || '').trim().slice(0, VALIDATION_LIMITS.MAX_PHOTO_URL);
+
+  const localRecord: UserNotificationRecord = {
+    id: notificationId,
+    notificationId,
+    userId: resolvedUid,
+    category: params.category,
+    eventType: params.eventType,
+    title: cleanTitle,
+    message: cleanMessage,
+    actionType: cleanActionType,
+    relatedId: cleanRelatedId,
+    trackingNumber: cleanTrackingNumber,
+    imageUrl: cleanImageUrl,
+    read: false,
+    createdAtMs: Date.now(),
+    isLocalOnly: !activeUser || !activeUser.emailVerified || resolvedUid === 'guest_shopper',
+  };
+
+  if (activeUser && activeUser.emailVerified && resolvedUid !== 'guest_shopper') {
+    try {
+      await setDoc(doc(db, 'users', resolvedUid, 'notifications', notificationId), {
+        notificationId,
+        userId: resolvedUid,
+        category: params.category,
+        eventType: params.eventType,
+        title: cleanTitle,
+        message: cleanMessage,
+        actionType: cleanActionType,
+        relatedId: cleanRelatedId,
+        trackingNumber: cleanTrackingNumber,
+        imageUrl: cleanImageUrl,
+        read: false,
+        createdAt: serverTimestamp(),
+      });
+      localRecord.isLocalOnly = false;
+    } catch (err) {
+      console.warn('User notification Firestore write skipped:', err);
     }
   }
 

@@ -5,10 +5,15 @@ import type {
   OrderInvoiceLineItem,
 } from '../components/OrderTrackingModal';
 import { getStageLabelFromStatus } from '../components/OrderTrackingModal';
+import {
+  DEFAULT_CARRIER_NAME,
+  resolveOrderTrackingNumber,
+} from './trackingSystem';
 
 export interface StoredOrderInvoiceMetadata {
   orderId: string;
   orderNumber: string;
+  trackingNumber?: string;
   items: OrderInvoiceLineItem[];
   subtotal: number;
   couponCode: string;
@@ -206,7 +211,12 @@ export function downloadOrderInvoicePdf(
   });
 
   const cleanOrderNum = order.orderNumber.replace(/[^a-zA-Z0-9_-]/g, '');
-  const trackingCode = `BKP-LK-${cleanOrderNum.toUpperCase()}`;
+  const trackingCode = resolveOrderTrackingNumber({
+    id: order.id,
+    orderNumber: order.orderNumber,
+    trackingNumber: order.trackingNumber || storedMeta?.trackingNumber,
+    createdAtMs: order.createdAtMs || storedMeta?.createdAtMs,
+  });
   const statusLabel = getStageLabelFromStatus(order.status).toUpperCase();
 
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
@@ -219,11 +229,11 @@ export function downloadOrderInvoicePdf(
   // 1. TOP BRANDED HEADER BANNER
   // =========================================================
   doc.setFillColor(15, 23, 42); // slate-900
-  doc.rect(0, 0, pageWidth, 38, 'F');
+  doc.rect(0, 0, pageWidth, 40, 'F');
 
   // BuyKit Orange bottom accent strip
   doc.setFillColor(248, 86, 6); // #F85606
-  doc.rect(0, 38, pageWidth, 2.5, 'F');
+  doc.rect(0, 40, pageWidth, 2.5, 'F');
 
   // Brand Title (Left)
   doc.setTextColor(255, 255, 255);
@@ -240,6 +250,10 @@ export function downloadOrderInvoicePdf(
   doc.setFontSize(9);
   doc.text('Sri Lanka Online Marketplace · Official Order Invoice (LKR)', marginX, 23.5);
   doc.text('Colombo 03, Sri Lanka · support@buykit.lk', marginX, 29);
+  doc.setTextColor(255, 184, 0);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(8.5);
+  doc.text(`Tracking No: ${trackingCode}`, marginX, 35);
 
   // Invoice Header Block (Right)
   doc.setTextColor(255, 255, 255);
@@ -255,18 +269,21 @@ export function downloadOrderInvoicePdf(
   doc.text(`Issued: ${formattedDate} · ${formattedTime}`, pageWidth - marginX, 32.5, {
     align: 'right',
   });
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(255, 255, 255);
+  doc.text(`Waybill: ${trackingCode}`, pageWidth - marginX, 37.2, { align: 'right' });
 
   // =========================================================
   // 2. CUSTOMER & ORDER METADATA CARDS
   // =========================================================
-  let cursorY = 48;
+  let cursorY = 50;
   const colGap = 6;
   const halfWidth = (contentWidth - colGap) / 2;
 
   // Left Box: Billed & Shipped To
   doc.setFillColor(248, 250, 252);
   doc.setDrawColor(226, 232, 240);
-  doc.roundedRect(marginX, cursorY, halfWidth, 35, 2.5, 2.5, 'FD');
+  doc.roundedRect(marginX, cursorY, halfWidth, 38, 2.5, 2.5, 'FD');
 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(8.5);
@@ -283,47 +300,51 @@ export function downloadOrderInvoicePdf(
   doc.setTextColor(71, 85, 105);
   const addressLines = doc.splitTextToSize(shippingAddress, halfWidth - 8).slice(0, 2);
   doc.text(addressLines, marginX + 4, cursorY + 18.5);
-  doc.text(`Phone: ${customerPhone}`, marginX + 4, cursorY + 27.5);
-  doc.text(`Email: ${customerEmail.slice(0, 38)}`, marginX + 4, cursorY + 32);
+  doc.text(`Phone: ${customerPhone}`, marginX + 4, cursorY + 28.5);
+  doc.text(`Email: ${customerEmail.slice(0, 38)}`, marginX + 4, cursorY + 33.5);
 
-  // Right Box: Order & Payment Details
+  // Right Box: Order, Tracking & Payment Details
   const rightX = marginX + halfWidth + colGap;
   doc.setFillColor(248, 250, 252);
   doc.setDrawColor(226, 232, 240);
-  doc.roundedRect(rightX, cursorY, halfWidth, 35, 2.5, 2.5, 'FD');
+  doc.roundedRect(rightX, cursorY, halfWidth, 38, 2.5, 2.5, 'FD');
 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(8.5);
   doc.setTextColor(248, 86, 6);
-  doc.text('ORDER & PAYMENT DETAILS', rightX + 4, cursorY + 6.5);
+  doc.text('ORDER & SHIPMENT TRACKING', rightX + 4, cursorY + 6.5);
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(8.5);
   doc.setTextColor(71, 85, 105);
 
-  const metaRows: Array<[string, string]> = [
+  const metaRows: Array<[string, string, boolean?]> = [
+    ['Tracking No:', trackingCode, true],
+    ['Carrier:', DEFAULT_CARRIER_NAME],
     ['Status:', statusLabel],
-    ['Waybill:', trackingCode],
-    ['Payment:', paymentMethodLabel.slice(0, 32)],
-    ['Delivery:', deliveryMethodLabel.slice(0, 32)],
-    ['Currency:', 'Sri Lankan Rupee (LKR)'],
+    ['Payment:', paymentMethodLabel.slice(0, 30)],
+    ['Delivery:', deliveryMethodLabel.slice(0, 30)],
   ];
 
   let metaY = cursorY + 12.5;
-  for (const [label, val] of metaRows) {
+  for (const [label, val, highlight] of metaRows) {
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(51, 65, 85);
     doc.text(label, rightX + 4, metaY);
-    doc.setFont('helvetica', 'normal');
-    doc.setTextColor(15, 23, 42);
-    doc.text(val, rightX + 24, metaY);
-    metaY += 4.8;
+    doc.setFont('helvetica', highlight ? 'bold' : 'normal');
+    if (highlight) {
+      doc.setTextColor(248, 86, 6);
+    } else {
+      doc.setTextColor(15, 23, 42);
+    }
+    doc.text(val, rightX + 26, metaY);
+    metaY += 5.1;
   }
 
   // =========================================================
   // 3. ITEMIZED ORDER TABLE
   // =========================================================
-  cursorY += 43;
+  cursorY += 45;
 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(10);
@@ -501,9 +522,60 @@ export function downloadOrderInvoicePdf(
   doc.text(formatLKR(finalTotalLkr), valueX, totalBoxY + 7.4, { align: 'right' });
 
   // =========================================================
-  // 5. FOOTER
+  // 5. OFFICIAL SHIPMENT WAYBILL & BARCODE STRIP
   // =========================================================
-  const footerY = pageHeight - 18;
+  const barcodeBoxY = Math.min(pageHeight - 44, Math.max(totalBoxY + 18, cursorY + 48));
+  if (barcodeBoxY < pageHeight - 36) {
+    doc.setFillColor(248, 250, 252);
+    doc.setDrawColor(226, 232, 240);
+    doc.roundedRect(marginX, barcodeBoxY, contentWidth, 21, 2.5, 2.5, 'FD');
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8);
+    doc.setTextColor(51, 65, 85);
+    doc.text('REAL-TIME SHIPMENT TRACKING NUMBER', marginX + 4, barcodeBoxY + 6.5);
+
+    doc.setFont('courier', 'bold');
+    doc.setFontSize(12);
+    doc.setTextColor(15, 23, 42);
+    doc.text(trackingCode, marginX + 4, barcodeBoxY + 13.5);
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.5);
+    doc.setTextColor(100, 116, 139);
+    doc.text(
+      `Carrier: ${DEFAULT_CARRIER_NAME} · Hub: ${order.pickupHubName.slice(0, 34)}`,
+      marginX + 4,
+      barcodeBoxY + 18
+    );
+
+    // Deterministic vector barcode bars encoded from trackingCode characters
+    let barX = pageWidth - marginX - 66;
+    const barTop = barcodeBoxY + 3.5;
+    const barHeight = 11.5;
+    doc.setFillColor(15, 23, 42);
+    for (let i = 0; i < trackingCode.length && barX < pageWidth - marginX - 5; i++) {
+      const code = trackingCode.charCodeAt(i);
+      const w1 = code % 2 === 0 ? 0.9 : 0.45;
+      const w2 = (code >> 1) % 2 === 0 ? 0.45 : 1.05;
+      const g1 = 0.55;
+      const g2 = 0.65;
+      doc.rect(barX, barTop, w1, barHeight, 'F');
+      barX += w1 + g1;
+      doc.rect(barX, barTop, w2, barHeight, 'F');
+      barX += w2 + g2;
+    }
+
+    doc.setFont('courier', 'normal');
+    doc.setFontSize(6.8);
+    doc.setTextColor(71, 85, 105);
+    doc.text(trackingCode, pageWidth - marginX - 35, barcodeBoxY + 18.2, { align: 'center' });
+  }
+
+  // =========================================================
+  // 6. FOOTER
+  // =========================================================
+  const footerY = pageHeight - 16;
   doc.setDrawColor(226, 232, 240);
   doc.line(marginX, footerY - 4, pageWidth - marginX, footerY - 4);
 
@@ -517,7 +589,7 @@ export function downloadOrderInvoicePdf(
     { align: 'center' }
   );
   doc.text(
-    `Order #${order.orderNumber} · Waybill ${trackingCode} · All totals settled in Sri Lankan Rupees (LKR)`,
+    `Order #${order.orderNumber} · Tracking No: ${trackingCode} · All totals settled in Sri Lankan Rupees (LKR)`,
     pageWidth / 2,
     footerY + 4.5,
     { align: 'center' }

@@ -9,6 +9,7 @@ import {
   ChevronRight,
   Sparkles,
   CheckCircle2,
+  Share2,
 } from 'lucide-react';
 import { MarketplaceProduct, formatLKR } from '../data/catalog';
 import {
@@ -24,6 +25,7 @@ interface StorefrontPromoAndSalesShowcaseProps {
   onOpenProduct: (product: MarketplaceProduct) => void;
   onAddToCart: (product: MarketplaceProduct, qty: number) => void;
   onBuyNow: (product: MarketplaceProduct, qty: number) => void;
+  onShareProduct?: (product: MarketplaceProduct, e?: React.MouseEvent) => void;
 }
 
 export const StorefrontPromoAndSalesShowcase: React.FC<
@@ -35,6 +37,7 @@ export const StorefrontPromoAndSalesShowcase: React.FC<
   onOpenProduct,
   onAddToCart,
   onBuyNow,
+  onShareProduct,
 }) => {
   const [activePosterIdx, setActivePosterIdx] = useState<number>(0);
 
@@ -147,6 +150,20 @@ export const StorefrontPromoAndSalesShowcase: React.FC<
                       </div>
 
                       <div className="flex items-center gap-1.5">
+                        {onShareProduct && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onShareProduct(targetProduct, e);
+                            }}
+                            aria-label={`Share ${targetProduct.title}`}
+                            title="Share product link"
+                            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-white/20 bg-white/10 text-white transition-colors hover:border-[#F85606] hover:bg-[#F85606]"
+                          >
+                            <Share2 className="h-3.5 w-3.5" />
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={(e) => {
@@ -233,9 +250,23 @@ export const StorefrontPromoAndSalesShowcase: React.FC<
                         <span className="absolute bottom-1.5 left-1.5 rounded bg-slate-950/85 px-2 py-0.5 font-mono text-[10px] font-extrabold text-amber-300">
                           -{sale.discountPercent}% OFF
                         </span>
-                        <span className="absolute top-1.5 right-1.5 rounded bg-emerald-600 px-1.5 py-0.5 text-[9px] font-extrabold text-white uppercase">
+                        <span className="absolute top-1.5 left-1.5 rounded bg-emerald-600 px-1.5 py-0.5 text-[9px] font-extrabold text-white uppercase">
                           In Stock
                         </span>
+                        {onShareProduct && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onShareProduct(product, e);
+                            }}
+                            aria-label={`Share ${product.title}`}
+                            title="Share product link"
+                            className="absolute top-1.5 right-1.5 flex h-7 w-7 items-center justify-center rounded-full bg-white/95 text-slate-700 shadow-xs transition-colors hover:bg-[#F85606] hover:text-white"
+                          >
+                            <Share2 className="h-3.5 w-3.5" />
+                          </button>
+                        )}
                       </div>
 
                       {/* Sale Title & Creative Tagline */}

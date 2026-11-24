@@ -99,9 +99,10 @@ service cloud.firestore {
 
     function isValidOrderRecord(data) {
       return data.keys().hasAll(['userId', 'orderNumber', 'summaryTitle', 'itemCount', 'totalAmount', 'paymentMethod', 'pickupHubName', 'status', 'createdAt', 'updatedAt']) &&
-        data.keys().hasOnly(['userId', 'orderNumber', 'summaryTitle', 'itemCount', 'totalAmount', 'paymentMethod', 'pickupHubName', 'status', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['userId', 'orderNumber', 'trackingNumber', 'summaryTitle', 'itemCount', 'totalAmount', 'paymentMethod', 'pickupHubName', 'status', 'createdAt', 'updatedAt']) &&
         data.userId is string && isValidId(data.userId) && (data.userId == request.auth.uid || isAdmin()) &&
         data.orderNumber is string && data.orderNumber.size() >= 4 && data.orderNumber.size() <= 40 && data.orderNumber.matches('^[a-zA-Z0-9_\\-]+$') &&
+        (!('trackingNumber' in data) || (data.trackingNumber is string && data.trackingNumber.size() >= 8 && data.trackingNumber.size() <= 40 && data.trackingNumber.matches('^[A-Z0-9\\-]+$'))) &&
         data.summaryTitle is string && data.summaryTitle.size() >= 1 && data.summaryTitle.size() <= 200 &&
         data.itemCount is number && data.itemCount >= 1 && data.itemCount <= 500 &&
         data.totalAmount is number && data.totalAmount >= 0 && data.totalAmount <= 500000000 &&
@@ -218,10 +219,11 @@ service cloud.firestore {
 
     function isValidAdminOrderRecord(data) {
       return data.keys().hasAll(['orderId', 'userId', 'orderNumber', 'customerName', 'customerEmail', 'customerPhone', 'shippingAddress', 'summaryTitle', 'itemCount', 'totalAmount', 'paymentMethod', 'paymentLabel', 'pickupHubName', 'status', 'createdAt', 'updatedAt']) &&
-        data.keys().hasOnly(['orderId', 'userId', 'orderNumber', 'customerName', 'customerEmail', 'customerPhone', 'shippingAddress', 'summaryTitle', 'itemCount', 'totalAmount', 'paymentMethod', 'paymentLabel', 'pickupHubName', 'status', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['orderId', 'userId', 'orderNumber', 'trackingNumber', 'customerName', 'customerEmail', 'customerPhone', 'shippingAddress', 'summaryTitle', 'itemCount', 'totalAmount', 'paymentMethod', 'paymentLabel', 'pickupHubName', 'status', 'createdAt', 'updatedAt']) &&
         data.orderId is string && isValidId(data.orderId) &&
         data.userId is string && isValidId(data.userId) && (data.userId == request.auth.uid || isAdmin()) &&
         data.orderNumber is string && data.orderNumber.size() >= 4 && data.orderNumber.size() <= 40 && data.orderNumber.matches('^[a-zA-Z0-9_\\-]+$') &&
+        (!('trackingNumber' in data) || (data.trackingNumber is string && data.trackingNumber.size() >= 8 && data.trackingNumber.size() <= 40 && data.trackingNumber.matches('^[A-Z0-9\\-]+$'))) &&
         data.customerName is string && data.customerName.size() >= 1 && data.customerName.size() <= 80 &&
         data.customerEmail is string && data.customerEmail.size() <= 160 &&
         data.customerPhone is string && data.customerPhone.size() <= 40 &&
@@ -235,6 +237,26 @@ service cloud.firestore {
         data.status is string && data.status in ['processing', 'preparing', 'dispatched', 'in_transit', 'shipped', 'delivered', 'cancelled'] &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
+    }
+
+    function isValidUserNotification(data) {
+      return data.keys().hasAll(['notificationId', 'userId', 'category', 'eventType', 'title', 'message', 'actionType', 'relatedId', 'trackingNumber', 'imageUrl', 'read', 'createdAt']) &&
+        data.keys().hasOnly(['notificationId', 'userId', 'category', 'eventType', 'title', 'message', 'actionType', 'relatedId', 'trackingNumber', 'imageUrl', 'read', 'createdAt']) &&
+        data.notificationId is string && isValidId(data.notificationId) &&
+        data.userId is string && isValidId(data.userId) && (data.userId == request.auth.uid || isAdmin()) &&
+        data.category is string && data.category.size() >= 1 && data.category.size() <= 24 &&
+        data.category in ['orders', 'promos', 'activity', 'system'] &&
+        data.eventType is string && data.eventType.size() >= 1 && data.eventType.size() <= 32 &&
+        data.eventType in ['order_placed', 'order_preparing', 'order_dispatched', 'order_in_transit', 'order_shipped', 'order_delivered', 'order_cancelled', 'voucher_claimed', 'flash_sale', 'wishlist_saved', 'question_answered', 'review_posted', 'welcome', 'admin_broadcast'] &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 140 &&
+        data.message is string && data.message.size() >= 1 && data.message.size() <= 500 &&
+        data.actionType is string && data.actionType.size() >= 1 && data.actionType.size() <= 24 &&
+        data.actionType in ['open_order', 'open_product', 'open_coupons', 'open_deals', 'open_cart', 'none'] &&
+        data.relatedId is string && data.relatedId.size() <= 128 &&
+        data.trackingNumber is string && data.trackingNumber.size() <= 40 &&
+        data.imageUrl is string && data.imageUrl.size() <= 500 &&
+        data.read is bool &&
+        data.createdAt is timestamp;
     }
 
     // Admins UID lookup collection (read-only for owner/admin)
@@ -466,6 +488,34 @@ service cloud.firestore {
           );
 
         allow delete: if isOwner(userId) && isValidId(userId) && isValidId(itemId) && userParentExists(userId);
+      }
+
+      // 5B. Customer Real-Time Notifications Subcollection (Owner reads/marks read/deletes; Owner & Admin can push)
+      match /notifications/{notificationId} {
+        allow get: if (isOwner(userId) || isAdmin()) && isValidId(userId) && isValidId(notificationId) && userParentExists(userId);
+        allow list: if (isOwner(userId) && existing().userId == request.auth.uid) || isAdmin();
+
+        allow create: if (isOwner(userId) || isAdmin()) &&
+          isValidId(userId) &&
+          isValidId(notificationId) &&
+          isValidUserNotification(incoming()) &&
+          incoming().notificationId == notificationId &&
+          incoming().userId == userId &&
+          incoming().read == false &&
+          incoming().createdAt == request.time &&
+          userParentExists(userId);
+
+        allow update: if isOwner(userId) &&
+          isValidId(userId) &&
+          isValidId(notificationId) &&
+          isValidUserNotification(incoming()) &&
+          incoming().notificationId == existing().notificationId &&
+          incoming().userId == existing().userId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['read']) &&
+          userParentExists(userId);
+
+        allow delete: if (isOwner(userId) || isAdmin()) && isValidId(userId) && isValidId(notificationId) && userParentExists(userId);
       }
     }
 

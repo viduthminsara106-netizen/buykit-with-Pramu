@@ -179,6 +179,13 @@
           "maxLength": 40,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
         },
+        "trackingNumber": {
+          "type": "string",
+          "description": "Checksum-verified BuyKit Express waybill tracking number (e.g. BKEX-LK-YYMMDD-XXXXXX-C).",
+          "minLength": 8,
+          "maxLength": 40,
+          "pattern": "^[A-Z0-9\\-]+$"
+        },
         "summaryTitle": {
           "type": "string",
           "description": "Summary of ordered items.",
@@ -709,6 +716,13 @@
           "maxLength": 40,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
         },
+        "trackingNumber": {
+          "type": "string",
+          "description": "Checksum-verified BuyKit Express waybill tracking number (e.g. BKEX-LK-YYMMDD-XXXXXX-C).",
+          "minLength": 8,
+          "maxLength": 40,
+          "pattern": "^[A-Z0-9\\-]+$"
+        },
         "customerName": {
           "type": "string",
           "description": "Recipient full name.",
@@ -785,6 +799,103 @@
         }
       },
       "required": ["orderId", "userId", "orderNumber", "customerName", "customerEmail", "customerPhone", "shippingAddress", "summaryTitle", "itemCount", "totalAmount", "paymentMethod", "paymentLabel", "pickupHubName", "status", "createdAt", "updatedAt"]
+    },
+    "UserNotificationRecord": {
+      "title": "UserNotificationRecord",
+      "description": "Real-time Daraz/AliExpress-style customer notification for order status updates, tracking waybills, vouchers, Q&A answers, and wishlist activity.",
+      "type": "object",
+      "properties": {
+        "notificationId": {
+          "type": "string",
+          "description": "Unique notification document identifier.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the recipient shopper.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "category": {
+          "type": "string",
+          "description": "Notification inbox category tab.",
+          "enum": ["orders", "promos", "activity", "system"],
+          "minLength": 1,
+          "maxLength": 24
+        },
+        "eventType": {
+          "type": "string",
+          "description": "Specific storefront event that triggered this notification.",
+          "enum": [
+            "order_placed",
+            "order_preparing",
+            "order_dispatched",
+            "order_in_transit",
+            "order_shipped",
+            "order_delivered",
+            "order_cancelled",
+            "voucher_claimed",
+            "flash_sale",
+            "wishlist_saved",
+            "question_answered",
+            "review_posted",
+            "welcome",
+            "admin_broadcast"
+          ],
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "title": {
+          "type": "string",
+          "description": "Concise notification headline.",
+          "minLength": 1,
+          "maxLength": 140
+        },
+        "message": {
+          "type": "string",
+          "description": "Notification body message.",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "actionType": {
+          "type": "string",
+          "description": "Navigation action triggered when the shopper taps this notification.",
+          "enum": ["open_order", "open_product", "open_coupons", "open_deals", "open_cart", "none"],
+          "minLength": 1,
+          "maxLength": 24
+        },
+        "relatedId": {
+          "type": "string",
+          "description": "Related order ID, product ID, or general identifier.",
+          "minLength": 0,
+          "maxLength": 128
+        },
+        "trackingNumber": {
+          "type": "string",
+          "description": "Optional tracking number associated with an order notification.",
+          "minLength": 0,
+          "maxLength": 40
+        },
+        "imageUrl": {
+          "type": "string",
+          "description": "Optional product thumbnail URL.",
+          "minLength": 0,
+          "maxLength": 500
+        },
+        "read": {
+          "type": "boolean",
+          "description": "Whether the shopper has read this notification."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the notification was created."
+        }
+      },
+      "required": ["notificationId", "userId", "category", "eventType", "title", "message", "actionType", "relatedId", "trackingNumber", "imageUrl", "read", "createdAt"]
     }
   },
   "firestore": {
@@ -807,6 +918,10 @@
     "/users/{userId}/wishlist/{itemId}": {
       "schema": { "$ref": "#/entities/WishlistItem" },
       "description": "Stores saved wishlist products belonging to the authenticated user."
+    },
+    "/users/{userId}/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/UserNotificationRecord" },
+      "description": "Stores real-time customer notifications for orders, shipping updates, vouchers, and activity."
     },
     "/product_reviews/{reviewId}": {
       "schema": { "$ref": "#/entities/ProductReview" },
