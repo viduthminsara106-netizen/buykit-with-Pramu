@@ -380,21 +380,91 @@ export async function emitUserNotificationToFirestore(params: {
   return localRecord;
 }
 
-export async function ensureUserProfileDocument(user: User): Promise<void> {
+export interface FriendlyAuthError {
+  code: string;
+  title: string;
+  message: string;
+  unauthorizedHostname?: string;
+}
+
+export function getFriendlyAuthError(err: unknown): FriendlyAuthError {
+  const rawMessage = err instanceof Error ? err.message : String(err);
+  const codeMatch = rawMessage.match(/\((auth\/[a-z0-9-]+)\)/i);
+  const code =
+    (typeof err === 'object' && err !== null && 'code' in err
+      ? String((err as { code?: unknown }).code || '')
+      : '') ||
+    (codeMatch ? codeMatch[1] : 'auth/unknown');
+
+  if (code === 'auth/unauthorized-domain' || rawMessage.includes('unauthorized-domain')) {
+    const hostname =
+      typeof window !== 'undefined' ? window.location.hostname : 'this domain';
+    return {
+      code: 'auth/unauthorized-domain',
+      title: 'Domain Authorization Needed',
+      message: `Google Sign-In is not yet authorized on "${hostname}". Refresh the page or add this domain in Firebase Console → Authentication → Settings → Authorized domains.`,
+      unauthorizedHostname: hostname,
+    };
+  }
+  if (code === 'auth/popup-blocked') {
+    return {
+      code,
+      title: 'Sign-In Popup Was Blocked',
+      message:
+        'Your browser blocked the Google Sign-In window. Please allow popups for this site and tap the button again.',
+    };
+  }
+  if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+    return {
+      code,
+      title: 'Sign-In Cancelled',
+      message: 'The Google Sign-In window was closed before completing. Tap below to try again.',
+    };
+  }
+  if (code === 'auth/network-request-failed') {
+    return {
+      code,
+      title: 'Network Connection Issue',
+      message: 'Please check your internet connection and try signing in again.',
+    };
+  }
+
+  return {
+    code,
+    title: 'Unable to Sign In',
+    message: rawMessage.replace(/^Firebase:\s*/i, '').trim() || 'Please try signing in again.',
+  };
+}
+
+export async function ensureUserProfileDocument(
+  user: User,
+  options?: { displayNameOverride?: string; claimNewUserVoucher?: boolean }
+): Promise<void> {
   const userPath = `users/${user.uid}`;
   const userRef = doc(db, 'users', user.uid);
   try {
     const snap = await getDoc(userRef);
+    const resolvedName = (
+      options?.displayNameOverride?.trim() ||
+      user.displayName ||
+      user.email?.split('@')[0] ||
+      'BuyKit Shopper'
+    ).slice(0, VALIDATION_LIMITS.MAX_DISPLAY_NAME);
+
     if (!snap.exists()) {
       await setDoc(userRef, {
         userId: user.uid,
-        displayName: (user.displayName || user.email?.split('@')[0] || 'BuyKit Shopper').slice(
-          0,
-          VALIDATION_LIMITS.MAX_DISPLAY_NAME
-        ),
+        displayName: resolvedName,
         photoUrl: (user.photoURL || '').slice(0, VALIDATION_LIMITS.MAX_PHOTO_URL),
-        newUserDealClaimed: false,
+        newUserDealClaimed: Boolean(options?.claimNewUserVoucher),
         createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    } else if (options?.claimNewUserVoucher && !snap.data()?.newUserDealClaimed) {
+      await updateDoc(userRef, {
+        displayName: resolvedName,
+        photoUrl: (user.photoURL || '').slice(0, VALIDATION_LIMITS.MAX_PHOTO_URL),
+        newUserDealClaimed: true,
         updatedAt: serverTimestamp(),
       });
     }
@@ -403,9 +473,12 @@ export async function ensureUserProfileDocument(user: User): Promise<void> {
   }
 }
 
-export async function signInWithGoogleAccount(): Promise<User> {
+export async function signInWithGoogleAccount(options?: {
+  displayNameOverride?: string;
+  claimNewUserVoucher?: boolean;
+}): Promise<User> {
   const result = await signInWithPopup(auth, googleProvider);
-  await ensureUserProfileDocument(result.user);
+  await ensureUserProfileDocument(result.user, options);
   return result.user;
 }
 

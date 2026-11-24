@@ -6661,7 +6661,27 @@ function StorefrontApp() {
         pendingProductName={
           pendingCartProduct?.title || pendingWishlistProduct?.title || null
         }
-        onSuccess={(loggedInUser) => {
+        onSuccess={(loggedInUser, extras) => {
+          if (extras?.fullName) {
+            setFullName(extras.fullName);
+          }
+          if (extras?.phone) {
+            setPhone(extras.phone);
+          }
+          if (extras?.voucherClaimed) {
+            setNewUserDealClaimed(true);
+            void pushUserNotification({
+              targetUserId: loggedInUser.uid,
+              category: 'promos',
+              eventType: 'voucher_claimed',
+              title: 'Rs. 5,000 Welcome Starter Voucher Unlocked!',
+              message:
+                'Welcome to BuyKit with Pramu! Your New User Starter Pass discounts are now active.',
+              actionType: 'open_deals',
+              relatedId: 'new_user_voucher',
+              user: loggedInUser,
+            });
+          }
           if (pendingCartProduct) {
             const toAdd = pendingCartProduct;
             const qty = pendingQty;
@@ -6674,7 +6694,11 @@ function StorefrontApp() {
             setPendingWishlistProduct(null);
             handleToggleWishlist(toWish, undefined, loggedInUser);
           } else {
-            showToast(`Welcome to BuyKit with Pramu, ${loggedInUser.displayName || 'Shopper'}!`);
+            showToast(
+              extras?.mode === 'register'
+                ? `Welcome to BuyKit with Pramu, ${extras.fullName || loggedInUser.displayName || 'Shopper'}! Rs. 5,000 Starter Voucher unlocked.`
+                : `Welcome back to BuyKit with Pramu, ${loggedInUser.displayName || 'Shopper'}!`
+            );
           }
         }}
       />
